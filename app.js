@@ -1,0 +1,1072 @@
+// ── StockIQ · app.js ─────────────────────────────────────────────────────────
+// Frontend logic: API calls, rendering, caching, watchlist, DCF, compare, etc.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BASE = '/api';
+const APP_VERSION = '1.4';
+
+// Clear localStorage cache if app version changed
+(()=>{
+  const v = localStorage.getItem('siq_version');
+  if (v !== APP_VERSION) {
+    for (const k of Object.keys(localStorage))
+      if (k.startsWith('siq_') && k !== 'siq_watchlist' && k !== 'siq_recents' && k !== 'siq_dcfprefs')
+        localStorage.removeItem(k);
+    localStorage.setItem('siq_version', APP_VERSION);
+  }
+})();
+
+let priceChartInst = null;
+let currentData = {};
+let compareData  = {};
+
+// ── UTILS ──────────────────────────────────────────────────────────────────────
+// Escape HTML to prevent XSS from API data inserted into DOM
+const esc    = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+// Safe URL: only allow http/https protocols
+const safeUrl = (u) => { try { const p = new URL(String(u)); return (p.protocol==='https:' || p.protocol==='http:') ? p.href : ''; } catch { return ''; } };
+
+const fmtNum = (n, d=2) => n==null || isNaN(n) ? '—' : Number(n).toLocaleString('en-US', {maximumFractionDigits: d});
+const fmtPct = (n, d=1) => n==null || isNaN(n) ? '—' : Number(n).toFixed(d) + '%';
+const fmtM   = (n) => {
+  if (n==null || isNaN(n)) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e12) return (n/1e12).toFixed(2) + 'T';
+  if (a >= 1e9)  return (n/1e9).toFixed(2)  + 'B';
+  if (a >= 1e6)  return (n/1e6).toFixed(2)  + 'M';
+  if (a >= 1e3)  return (n/1e3).toFixed(1)  + 'K';
+  return fmtNum(n);
+};
+
+const today   = () => new Date().toISOString().slice(0, 10);
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+const show    = (id) => { const e = document.getElementById(id); if (e) e.style.display = 'block'; };
+const hide    = (id) => { const e = document.getElementById(id); if (e) e.style.display = 'none'; };
+const el      = (id) => document.getElementById(id);
+const clr     = (v, inv=false) => { if (v==null || isNaN(v)) return ''; return (inv ? v<0 : v>0) ? 'color:var(--green)' : 'color:var(--red)'; };
+
+const SECTOR_ETFS = {
+  'Technology':'XLK','Software':'XLK','Semiconductors':'XLK',
+  'Healthcare':'XLV','Biotechnology':'XLV','Pharmaceuticals':'XLV',
+  'Financials':'XLF','Financial Services':'XLF','Banks':'XLF','Insurance':'XLF',
+  'Energy':'XLE','Oil & Gas':'XLE',
+  'Consumer Cyclical':'XLY','Retail':'XLY','Automobiles':'XLY',
+  'Consumer Defensive':'XLP','Food':'XLP','Beverages':'XLP',
+  'Industrials':'XLI','Aerospace':'XLI',
+  'Basic Materials':'XLB','Materials':'XLB',
+  'Real Estate':'XLRE',
+  'Utilities':'XLU',
+  'Communication Services':'XLC','Media':'XLC','Telecom':'XLC',
+};
+
+// ── CLIENT-SIDE CACHE (localStorage, 15 min TTL) ──────────────────────────────
+const CLIENT_TTL = 15 * 60 * 1000;
+function lsGet(key) {
+  try {
+    const raw = localStorage.getItem('siq_' + key);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw);
+    if (Date.now() - ts > CLIENT_TTL) { localStorage.removeItem('siq_' + key); return null; }
+    return data;
+  } catch { return null; }
+}
+function lsSet(key, data) {
+  try { localStorage.setItem('siq_' + key, JSON.stringify({ data, ts: Date.now() })); } catch {}
+}
+
+// ── API PROXY FETCH ────────────────────────────────────────────────────────────
+async function api(endpoint, params = {}) {
+  const qs      = new URLSearchParams(params).toString();
+  const fullUrl = BASE + endpoint + (qs ? '?' + qs : '');
+  const cacheKey = fullUrl;
+  const cached  = lsGet(cacheKey);
+  if (cached) return cached;
+  const res  = await fetch(fullUrl);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  lsSet(cacheKey, data);
+  return data;
+}
+async function safeApi(endpoint, params = {}) { try { return await api(endpoint, params); } catch { return null; } }
+
+// ── TOAST NOTIFICATIONS ────────────────────────────────────────────────────────
+function toast(msg, type = 'info', dur = 3000) {
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;';
+    document.body.appendChild(container);
+  }
+  const t = document.createElement('div');
+  const colors = { info:'var(--accent)', success:'var(--green)', error:'var(--red)', warn:'var(--yellow)' };
+  t.style.cssText = `background:var(--surface);border:1px solid ${colors[type]||colors.info};border-left:4px solid ${colors[type]||colors.info};border-radius:8px;padding:10px 16px;font-size:13px;color:var(--text);max-width:280px;box-shadow:0 4px 16px rgba(0,0,0,.4);opacity:0;transition:opacity .3s;`;
+  t.textContent = msg;
+  container.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, dur);
+}
+
+// ── RECENT SEARCHES ────────────────────────────────────────────────────────────
+function getRecents() { try { return JSON.parse(localStorage.getItem('siq_recents') || '[]'); } catch { return []; } }
+function addRecent(ticker) {
+  let r = getRecents().filter(t => t !== ticker);
+  r.unshift(ticker); r = r.slice(0, 8);
+  try { localStorage.setItem('siq_recents', JSON.stringify(r)); } catch {}
+}
+function showRecents() {
+  const r = getRecents();
+  if (!r.length) return;
+  const box = el('suggestions');
+  box.innerHTML = `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Recent</div>`
+    + r.map(t => `<div class="sug-item" onclick="selectSug('${t}')"><span class="sug-ticker">${t}</span><span class="sug-name" style="color:var(--text2)">Recent search</span></div>`).join('');
+  box.style.display = 'block';
+}
+
+// ── WATCHLIST ──────────────────────────────────────────────────────────────────
+function getWatchlist() { try { return JSON.parse(localStorage.getItem('siq_watchlist') || '[]'); } catch { return []; } }
+function toggleWatchlist(ticker) {
+  let wl  = getWatchlist();
+  const idx = wl.indexOf(ticker);
+  if (idx === -1) { wl.push(ticker); toast(`${ticker} added to watchlist ⭐`, 'success'); }
+  else            { wl.splice(idx, 1); toast(`${ticker} removed from watchlist`, 'info'); }
+  try { localStorage.setItem('siq_watchlist', JSON.stringify(wl)); } catch {}
+  updateWatchlistBtn(ticker);
+  updateBottomBar(ticker);
+}
+function updateWatchlistBtn(ticker) {
+  const btn = el('watchlistBtn');
+  if (!btn) return;
+  const inWl = getWatchlist().includes(ticker);
+  btn.textContent    = inWl ? '★ Watching' : '☆ Watchlist';
+  btn.style.color       = inWl ? 'var(--yellow)' : '';
+  btn.style.borderColor = inWl ? 'var(--yellow)' : '';
+}
+
+// ── SEARCH AUTOCOMPLETE ────────────────────────────────────────────────────────
+let searchTimer;
+el('searchInput').addEventListener('focus', () => {
+  if (!el('searchInput').value.trim()) showRecents();
+});
+el('searchInput').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 1) { showRecents(); return; }
+  searchTimer = setTimeout(() => fetchSuggestions(q), 300);
+});
+el('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { el('suggestions').style.display = 'none'; analyze(el('searchInput').value.trim().toUpperCase()); }
+});
+el('searchBtn').addEventListener('click', () => {
+  el('suggestions').style.display = 'none'; analyze(el('searchInput').value.trim().toUpperCase());
+});
+document.addEventListener('click', (e) => { if (!e.target.closest('.search-wrap')) el('suggestions').style.display = 'none'; });
+
+async function fetchSuggestions(q) {
+  try {
+    const data  = await api('/search', { q });
+    const items = (data.result || []).slice(0, 6);
+    const box   = el('suggestions');
+    if (!items.length) { box.style.display = 'none'; return; }
+    box.innerHTML = items.map(r =>
+      `<div class="sug-item" onclick="selectSug('${esc(r.symbol)}')"><span class="sug-ticker">${esc(r.symbol)}</span><span class="sug-name">${esc(r.description || '')}</span></div>`
+    ).join('');
+    box.style.display = 'block';
+  } catch {}
+}
+function selectSug(sym) { el('searchInput').value = sym; el('suggestions').style.display = 'none'; analyze(sym); }
+
+// ── MAIN ANALYZE ──────────────────────────────────────────────────────────────
+async function analyze(ticker) {
+  if (!ticker) return;
+  ticker = ticker.toUpperCase();
+  el('searchInput').value = ticker;
+  hide('landing'); hide('dashboard'); hide('error');
+  el('loading').style.display = 'flex';
+  if (priceChartInst) { priceChartInst.destroy(); priceChartInst = null; }
+  clearCompare();
+
+  try {
+    const [profile, quote, metrics, recommendation, earnings, sentiment, news, peers] = await Promise.all([
+      api('/stock/profile2',       { symbol: ticker }),
+      api('/quote',                { symbol: ticker }),
+      api('/stock/metric',         { symbol: ticker, metric: 'all' }),
+      api('/stock/recommendation', { symbol: ticker }),
+      api('/stock/earnings',       { symbol: ticker, limit: 8 }),
+      safeApi('/stock/insider-sentiment', { symbol: ticker, from: daysAgo(365), to: today() }),
+      api('/company-news',         { symbol: ticker, from: daysAgo(14), to: today() }),
+      safeApi('/stock/peers',      { symbol: ticker }),
+    ]);
+
+    if (!profile || !profile.name) throw new Error('Ticker not found');
+
+    currentData = { profile, quote, metrics, recommendation, earnings, sentiment, news, peers, ticker };
+
+    hide('loading');
+    show('dashboard');
+    el('compareToggleBtn').style.display = '';
+    el('exportBtn').style.display        = '';
+    el('watchlistBtn').style.display     = '';
+    addRecent(ticker);
+    updateWatchlistBtn(ticker);
+    updateBottomBar(ticker);
+    toast(`Loaded ${profile.name || ticker}`, 'success', 2000);
+
+    const m      = metrics.metric || {};
+    const scores = calcScores(m, recommendation, quote, earnings);
+
+    renderHeader(profile, quote);
+    renderScorecard(scores, m, quote);
+    renderTopStats(quote, metrics, profile);
+    renderPriceRangeChart(metrics, quote);
+    renderRecommendation(recommendation);
+    renderValuation(m);
+    renderGrahamFairValue(m, quote);
+    renderDCF(m, profile, quote);
+    renderHealth(m);
+    renderProfitability(m);
+    renderGrowth(m);
+    renderPiotroski(m);
+    renderEarningsQuality(m);
+    renderForwardOutlook(earnings);
+    renderInsider(sentiment);
+    renderSector(profile, quote);
+    renderFinancials(ticker);
+    renderProfile(profile);
+    renderNews(news);
+    renderPeers(peers, ticker, profile, metrics, quote);
+
+  } catch (err) {
+    hide('loading');
+    el('errorMsg').textContent = err.message || 'Could not load data.';
+    show('error');
+  }
+}
+
+// ── SCORE CALCULATION ─────────────────────────────────────────────────────────
+function calcScores(m, rec, quote, earnings) {
+  let total = 0;
+  const signals = [];
+
+  // Valuation (0-25)
+  let val = 0;
+  const pe = m.peBasicExclExtraTTM;
+  if (pe > 0) { if (pe < 15) val += 10; else if (pe < 25) val += 7; else if (pe < 35) val += 4; else val += 1; }
+  const eps  = m.epsBasicExclExtraItemsAnnual || m.epsNormalizedAnnual;
+  const bvps = m.bookValuePerShareAnnual;
+  let gn = null;
+  if (eps > 0 && bvps > 0) {
+    gn = Math.sqrt(22.5 * eps * bvps);
+    const disc = (gn - quote.c) / gn * 100;
+    if (disc > 30) val += 10; else if (disc > 10) val += 6; else if (disc > 0) val += 3;
+  }
+  const peg = m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM / m.epsGrowthTTMYoy : null;
+  if (peg != null) { if (peg < 1 && peg > 0) val += 5; else if (peg < 2 && peg > 0) val += 3; }
+  total += Math.min(25, val);
+
+  // Growth (0-20)
+  let grow = 0;
+  const rg = m.revenueGrowthTTMYoy;
+  const eg = m.epsGrowthTTMYoy;
+  if (rg != null) { if (rg > 20) grow += 10; else if (rg > 10) grow += 7; else if (rg > 5) grow += 5; else if (rg > 0) grow += 2; }
+  if (eg != null) { if (eg > 20) grow += 10; else if (eg > 10) grow += 7; else if (eg > 5) grow += 5; else if (eg > 0) grow += 2; }
+  total += Math.min(20, grow);
+
+  // Analyst (0-10)
+  let an = 0;
+  if (rec && rec.length) {
+    const r   = rec[0];
+    const tot = (r.strongBuy||0) + (r.buy||0) + (r.hold||0) + (r.sell||0) + (r.strongSell||0);
+    const buyPct = tot ? ((r.strongBuy||0) + (r.buy||0)) / tot * 100 : 0;
+    if (buyPct > 70) an += 5; else if (buyPct > 50) an += 3;
+    if (r.strongBuy && r.strongBuy/tot > 0.3) an += 5; else if (r.strongBuy && r.strongBuy/tot > 0.1) an += 3;
+  }
+  total += Math.min(10, an);
+
+  // Health (0-15)
+  let health = 0;
+  const cr = m.currentRatioAnnual;
+  if (cr > 2) health += 5; else if (cr > 1) health += 3;
+  const de = m['totalDebt/totalEquityAnnual'];
+  if (de != null) { if (de < 0.5) health += 5; else if (de < 1) health += 3; else if (de < 2) health += 1; }
+  const ic = m.netInterestCoverageAnnual;
+  if (ic != null) { if (ic > 10) health += 5; else if (ic > 5) health += 3; else if (ic > 2) health += 1; }
+  total += Math.min(15, health);
+
+  // Momentum (0-10)
+  let mom = 0;
+  const hi = m['52WeekHigh'], lo = m['52WeekLow'];
+  if (hi && lo) { const pos = (quote.c - lo) / (hi - lo); if (pos > 0.8) mom += 3; else if (pos > 0.5) mom += 2; }
+  if (quote.dp > 0) mom += 3;
+  if (an >= 5) mom += 4; else if (an >= 3) mom += 2;
+  total += Math.min(10, mom);
+
+  // Quality proxy (0-20)
+  let qual = 0;
+  if (m.roaTTM > 0)                   qual += 3;
+  if (m.grossMarginTTM > 30)          qual += 3;
+  if (m.netProfitMarginTTM > 10)      qual += 4;
+  if (m.revenueGrowth5Y > 5)          qual += 3;
+  if (cr >= 1)                        qual += 3;
+  if (m.netInterestCoverageAnnual > 3) qual += 4;
+  total += Math.min(20, qual);
+
+  total = Math.min(100, Math.round(total));
+
+  // Signals
+  if (gn && quote.c < gn * 0.9)                               signals.push({ text:'Below Graham Number',      cls:'signal-green' });
+  if (peg && peg < 1.5 && peg > 0 && rg > 10 && eg > 10)     signals.push({ text:'GARP ✓',                   cls:'signal-green' });
+  if (pe > 0 && pe < 12 && rg < 0)                            signals.push({ text:'⚠ Value Trap Risk',        cls:'signal-red'   });
+  if (de > 3 && m.netProfitMarginTTM < 5)                     signals.push({ text:'⚠ High Debt + Low Margin', cls:'signal-red'   });
+  if (rg > 15)                                                 signals.push({ text:'High Revenue Growth',      cls:'signal-green' });
+  if (eg > 20)                                                 signals.push({ text:'Strong EPS Growth',        cls:'signal-green' });
+  if (peg && peg < 1 && peg > 0)                              signals.push({ text:'PEG < 1',                  cls:'signal-green' });
+  if (m.roeTTM > 30)                                           signals.push({ text:'High ROE',                 cls:'signal-green' });
+  if (de > 2)                                                  signals.push({ text:'High Leverage',            cls:'signal-yellow'});
+  if (quote.dp < -3)                                           signals.push({ text:'Falling Today',            cls:'signal-red'   });
+
+  const verdict = total >= 80 ? { label:'Strong Buy', color:'var(--green)' } :
+                  total >= 65 ? { label:'Buy',         color:'#5dd879'      } :
+                  total >= 50 ? { label:'Hold',        color:'var(--yellow)' } :
+                  total >= 35 ? { label:'Sell',        color:'#ff8a70'      } :
+                                { label:'Strong Sell', color:'var(--red)'   };
+
+  const techFund = total >= 65 && (quote.dp > 0 || quote.c > (m['52WeekLow'] + (m['52WeekHigh'] - m['52WeekLow']) * 0.5));
+
+  return { total, verdict, signals, gn, peg, techFund, rg, eg };
+}
+
+// ── RENDER SCORECARD ──────────────────────────────────────────────────────────
+function renderScorecard(scores, m, quote) {
+  const c = scores.verdict.color;
+  el('scorecard').innerHTML = `
+    <div class="scorecard-header">
+      <div class="score-circle" style="border-color:${c}">
+        <span class="score-num" style="color:${c}">${scores.total}</span>
+        <span class="score-label">/ 100</span>
+      </div>
+      <div class="verdict">
+        <div class="verdict-badge" style="background:${c}22;color:${c};border:1px solid ${c}">${scores.verdict.label}</div>
+        <div class="verdict-why">
+          ${scores.rg != null ? `Revenue Growth: <b style="${clr(scores.rg)}">${scores.rg>0?'+':''}${fmtPct(scores.rg)}</b> · ` : ''}
+          ${scores.eg != null ? `EPS Growth: <b style="${clr(scores.eg)}">${scores.eg>0?'+':''}${fmtPct(scores.eg)}</b> · ` : ''}
+          ${scores.peg != null ? `PEG: <b>${fmtNum(scores.peg,2)}</b> · ` : ''}
+          ${scores.gn != null ? `Graham: <b>$${fmtNum(scores.gn)}</b>` : ''}
+          ${scores.techFund ? '<br>Technical & Fundamental signals aligned ✓' : ''}
+        </div>
+      </div>
+      <div style="text-align:right;font-size:12px;color:var(--text2)">
+        ${scores.techFund ? '<div style="color:var(--green);font-weight:600;margin-bottom:4px">✓ Tech + Fundamentals Aligned</div>' : ''}
+        <div>Score breakdown:</div>
+        <div>Valuation · Growth · Health · Analyst · Momentum</div>
+      </div>
+    </div>
+    <div class="scorecard-signals">
+      ${scores.signals.map(s => `<span class="signal-chip ${s.cls}">${s.text}</span>`).join('')}
+    </div>`;
+}
+
+// ── RENDER HEADER ─────────────────────────────────────────────────────────────
+function renderHeader(profile, quote) {
+  updateStickyBar(profile, quote);
+  const change = quote.d || 0, pct = quote.dp || 0;
+  const dir = change >= 0 ? 'up' : 'down', sign = change >= 0 ? '+' : '';
+  el('companyHeader').innerHTML = `
+    ${profile.logo ? `<img class="company-logo" src="${safeUrl(profile.logo)}" onerror="this.style.display='none'"/>` : `<div class="company-logo-ph">${esc((profile.ticker||'?')[0])}</div>`}
+    <div class="company-info">
+      <div class="company-name">${esc(profile.name || profile.ticker)}</div>
+      <div class="company-meta"><span>${esc(profile.ticker)}</span><span>·</span><span>${esc(profile.exchange||'')}</span><span>·</span><span>${esc(profile.finnhubIndustry||'N/A')}</span></div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">
+        ${profile.country  ? `<span class="badge">🌍 ${esc(profile.country)}</span>`  : ''}
+        ${profile.currency ? `<span class="badge">💱 ${esc(profile.currency)}</span>` : ''}
+        ${profile.ipo      ? `<span class="badge">📅 IPO ${esc(profile.ipo)}</span>`  : ''}
+        ${profile.marketCapitalization ? `<span class="badge">🏦 ${fmtM(profile.marketCapitalization*1e6)}</span>` : ''}
+      </div>
+    </div>
+    <div class="price-block">
+      <div class="current-price">$${fmtNum(quote.c)}</div>
+      <div class="price-change ${dir}">${sign}$${fmtNum(Math.abs(change))} (${sign}${fmtPct(pct)})</div>
+      <div class="price-sub">H: $${fmtNum(quote.h)} · L: $${fmtNum(quote.l)} · Open: $${fmtNum(quote.o)}</div>
+    </div>`;
+}
+
+// ── TOP STATS ─────────────────────────────────────────────────────────────────
+function renderTopStats(quote, metrics, profile) {
+  const m  = metrics.metric || {};
+  const mc = profile.marketCapitalization;
+  const stats = [
+    { label:'Market Cap',      value: mc ? fmtM(mc*1e6) : '—', sub:'' },
+    { label:'P/E Ratio',       value: fmtNum(m.peBasicExclExtraTTM, 1), sub:'TTM' },
+    { label:'EPS (TTM)',       value: m.epsBasicExclExtraItemsAnnual ? '$'+fmtNum(m.epsBasicExclExtraItemsAnnual) : '—', sub:'Annual' },
+    { label:'52W High',        value: '$'+fmtNum(m['52WeekHigh']), sub: fmtPct(((quote.c/m['52WeekHigh'])-1)*100)+' from high' },
+    { label:'52W Low',         value: '$'+fmtNum(m['52WeekLow']),  sub: fmtPct(((quote.c/m['52WeekLow'])-1)*100)+' above low' },
+    { label:'Beta',            value: fmtNum(m.beta, 2), sub:'Vs S&P 500' },
+    { label:'Dividend Yield',  value: m.dividendYieldIndicatedAnnual ? fmtPct(m.dividendYieldIndicatedAnnual) : 'None', sub:'Indicated' },
+    { label:'Revenue/Share',   value: m.revenuePerShareTTM ? '$'+fmtNum(m.revenuePerShareTTM) : '—', sub:'TTM' },
+  ];
+  el('topStats').innerHTML = stats.map(s =>
+    `<div class="stat-card"><div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div><div class="stat-sub">${s.sub}</div></div>`
+  ).join('');
+}
+
+// ── PRICE RANGE CHART ─────────────────────────────────────────────────────────
+function renderPriceRangeChart(metrics, quote) {
+  const m    = metrics.metric || {};
+  const lo   = m['52WeekLow'], hi = m['52WeekHigh'], curr = quote.c;
+  const ctx  = el('priceChart').getContext('2d');
+  if (!lo || !hi) { ctx.fillStyle='#8b949e'; ctx.textAlign='center'; ctx.fillText('No data', 200, 120); return; }
+  const steps = 24, step = (hi-lo) / steps;
+  const labels   = Array.from({length: steps+1}, (_, i) => i%6===0 ? '$'+fmtNum(lo+i*step,0) : '');
+  const currIdx  = Math.round((curr-lo)/step);
+  const colors   = Array.from({length: steps+1}, (_, i) => i===Math.min(steps,Math.max(0,currIdx)) ? '#58a6ff' : i<currIdx ? '#3fb95055' : '#30363d');
+  priceChartInst = new Chart(ctx, {
+    type:'bar',
+    data:{ labels, datasets:[{ data:Array(steps+1).fill(1), backgroundColor:colors, borderRadius:3, borderSkipped:false }]},
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{enabled:false} }, scales:{ x:{grid:{display:false},ticks:{color:'#8b949e',font:{size:10}}}, y:{display:false} } }
+  });
+  const wrap = el('priceChart').parentElement;
+  let info   = wrap.querySelector('.range-info');
+  if (!info) { info = document.createElement('div'); info.className='range-info'; wrap.appendChild(info); }
+  const pct = ((curr-lo)/(hi-lo)*100).toFixed(1);
+  info.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-top:6px';
+  info.innerHTML = `<span>52W Low: <b style="color:var(--text)">$${fmtNum(lo)}</b></span><span>Now: <b style="color:var(--accent)">$${fmtNum(curr)}</b> · ${pct}% of range</span><span>52W High: <b style="color:var(--text)">$${fmtNum(hi)}</b></span>`;
+}
+
+// ── RECOMMENDATION ────────────────────────────────────────────────────────────
+function renderRecommendation(recs) {
+  if (!recs || !recs.length) { el('recommendContent').innerHTML='<p style="color:var(--text2);font-size:13px">No data.</p>'; return; }
+  const r     = recs[0];
+  const total = (r.strongBuy||0)+(r.buy||0)+(r.hold||0)+(r.sell||0)+(r.strongSell||0);
+  const pct   = n => total ? Math.round(n/total*100) : 0;
+  const buyPct = pct((r.strongBuy||0)+(r.buy||0)), holdPct=pct(r.hold||0), sellPct=pct((r.sell||0)+(r.strongSell||0));
+  const cons  = buyPct>55?'Strong Buy':buyPct>40?'Buy':sellPct>40?'Sell':'Hold';
+  const cc    = buyPct>40?'var(--green)':sellPct>40?'var(--red)':'var(--yellow)';
+  function bar(n, label, color) {
+    const maxH=70, h=n?Math.max(4,Math.round(n/Math.max(1,total)*maxH)):4;
+    return `<div class="rec-bar-wrap"><div class="rec-count" style="color:${color}">${n||0}</div><div class="rec-bar" style="height:${h}px;background:${color}"></div><div class="rec-label">${label}</div></div>`;
+  }
+  el('recommendContent').innerHTML = `
+    <div style="text-align:center;margin-bottom:10px"><div style="font-size:22px;font-weight:800;color:${cc}">${cons}</div><div style="font-size:12px;color:var(--text2)">${total} analysts · ${r.period||''}</div></div>
+    <div class="rec-grid">${bar(r.strongBuy,'Str.Buy','var(--green)')}${bar(r.buy,'Buy','#5dd879')}${bar(r.hold,'Hold','var(--yellow)')}${bar(r.sell,'Sell','#ff8a70')}${bar(r.strongSell,'Str.Sell','var(--red)')}</div>
+    <div class="sentiment-bar"><div class="sentiment-fill-buy" style="width:${buyPct}%"></div><div class="sentiment-fill-hold" style="width:${holdPct}%"></div><div class="sentiment-fill-sell" style="width:${sellPct}%"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text2);margin-top:3px"><span>Buy ${buyPct}%</span><span>Hold ${holdPct}%</span><span>Sell ${sellPct}%</span></div>`;
+}
+
+// ── VALUATION ─────────────────────────────────────────────────────────────────
+function metricRows(rows) { return rows.map(([l,v]) => `<div class="metric-row"><span class="metric-label">${l}</span><span class="metric-value">${v}</span></div>`).join(''); }
+function renderValuation(m) {
+  el('valuationContent').innerHTML = metricRows([
+    ['P/E (TTM)',        fmtNum(m.peBasicExclExtraTTM, 1)],
+    ['P/E (Annual)',     fmtNum(m.peExclExtraAnnual, 1)],
+    ['Forward P/E',     fmtNum(m.peNormalizedAnnual, 1)],
+    ['PEG Ratio',       fmtNum(m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM/m.epsGrowthTTMYoy : null, 2)],
+    ['P/B Ratio',       fmtNum(m.pbAnnual, 2)],
+    ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2)],
+    ['P/CF (TTM)',      fmtNum(m.pcfShareTTM, 2)],
+    ['EV/EBITDA',       fmtNum(m.evEbitdaTTM, 1)],
+    ['EV/Revenue',      fmtNum(m.evRevenueTTM, 2)],
+  ]);
+}
+
+// ── GRAHAM & FAIR VALUE ───────────────────────────────────────────────────────
+function renderGrahamFairValue(m, quote) {
+  const eps  = m.epsBasicExclExtraItemsAnnual || m.epsNormalizedAnnual;
+  const bvps = m.bookValuePerShareAnnual;
+  const curr = quote.c;
+  let html   = '';
+  if (eps > 0 && bvps > 0) {
+    const gn      = Math.sqrt(22.5 * eps * bvps);
+    const disc    = (gn - curr) / gn * 100;
+    const gnColor = curr < gn ? 'var(--green)' : 'var(--red)';
+    const pos     = Math.min(100, Math.max(0, (curr / Math.max(gn, curr)) * 100));
+    html += `
+      <div class="metric-row"><span class="metric-label">Graham Number</span><span class="metric-value" style="color:${gnColor}">$${fmtNum(gn)}</span></div>
+      <div class="metric-row"><span class="metric-label">Current Price</span><span class="metric-value">$${fmtNum(curr)}</span></div>
+      <div class="metric-row"><span class="metric-label">Margin of Safety</span><span class="metric-value" style="${clr(disc)}">${disc>0?'+':''}${fmtPct(disc)}</span></div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text2);margin-bottom:4px">Price vs Graham Number</div>
+      <div class="gauge-wrap"><div class="gauge-marker" style="left:${pos}%"></div></div>
+      <div class="gauge-labels"><span>Undervalued</span><span>Overvalued</span></div>
+      <div style="font-size:11px;color:var(--text2);margin-top:6px">${curr<gn?'✅ Trading below Graham Number':'⚠️ Above Graham Number'}</div>`;
+  } else {
+    html = '<p style="color:var(--text2);font-size:13px">Graham Number requires positive EPS and Book Value.</p>';
+  }
+  html += metricRows([
+    ['EPS (Annual)',   eps  ? '$'+fmtNum(eps)  : '—'],
+    ['Book Value/Sh',  bvps ? '$'+fmtNum(bvps) : '—'],
+    ['P/B Ratio',      fmtNum(m.pbAnnual, 2)],
+  ]);
+  el('grahamContent').innerHTML = html;
+}
+
+// ── DCF CALCULATOR ────────────────────────────────────────────────────────────
+function renderDCF(m, profile, quote) {
+  const rev              = m.revenuePerShareTTM && profile.shareOutstanding ? m.revenuePerShareTTM * profile.shareOutstanding * 1e6 : null;
+  const fcfMarginDefault = m.netProfitMarginTTM || 15;
+  const growthDefault    = Math.min(30, Math.max(-5, m.revenueGrowthTTMYoy || 10));
+  const shares           = profile.shareOutstanding * 1e6 || null;
+
+  if (!rev || !shares) { el('dcfContent').innerHTML='<p style="color:var(--text2);font-size:13px">Insufficient data for DCF.</p>'; return; }
+
+  const prefs    = loadDCFPrefs();
+  const savedDisc = prefs?.disc || 10;
+  const savedTerm = prefs?.term || 3;
+
+  el('dcfContent').innerHTML = `
+    <div class="dcf-controls">
+      <div class="dcf-control">
+        <label>Revenue Growth: <span class="val" id="dcfGrowthVal">${growthDefault.toFixed(0)}%</span></label>
+        <input type="range" id="dcfGrowth" min="-5" max="40" value="${growthDefault.toFixed(0)}" oninput="updateDCF();saveDCFPrefs()"/>
+      </div>
+      <div class="dcf-control">
+        <label>FCF Margin: <span class="val" id="dcfMarginVal">${fcfMarginDefault.toFixed(0)}%</span></label>
+        <input type="range" id="dcfMargin" min="1" max="50" value="${fcfMarginDefault.toFixed(0)}" oninput="updateDCF();saveDCFPrefs()"/>
+      </div>
+      <div class="dcf-control">
+        <label>Discount Rate: <span class="val" id="dcfDiscVal">${savedDisc}%</span></label>
+        <input type="range" id="dcfDisc" min="6" max="20" value="${savedDisc}" oninput="updateDCF();saveDCFPrefs()"/>
+      </div>
+      <div class="dcf-control">
+        <label>Terminal Growth: <span class="val" id="dcfTermVal">${savedTerm}%</span></label>
+        <input type="range" id="dcfTerm" min="1" max="6" value="${savedTerm}" oninput="updateDCF();saveDCFPrefs()"/>
+      </div>
+    </div>
+    <div class="dcf-result" id="dcfResult"></div>`;
+
+  window._dcfRev = rev; window._dcfShares = shares; window._dcfCurr = quote.c;
+  updateDCF();
+}
+
+function updateDCF() {
+  const growth = parseFloat(el('dcfGrowth')?.value || 10) / 100;
+  const margin = parseFloat(el('dcfMargin')?.value || 15) / 100;
+  const disc   = parseFloat(el('dcfDisc')?.value   || 10) / 100;
+  const term   = parseFloat(el('dcfTerm')?.value   || 3)  / 100;
+  el('dcfGrowthVal').textContent = (growth*100).toFixed(0) + '%';
+  el('dcfMarginVal').textContent = (margin*100).toFixed(0) + '%';
+  el('dcfDiscVal').textContent   = (disc*100).toFixed(0)   + '%';
+  el('dcfTermVal').textContent   = (term*100).toFixed(0)   + '%';
+  const rev = window._dcfRev, shares = window._dcfShares, curr = window._dcfCurr;
+  if (!rev || !shares) return;
+  let pv = 0, baseFCF = rev * margin;
+  for (let i = 1; i <= 10; i++) { baseFCF *= (1+growth); pv += baseFCF / Math.pow(1+disc, i); }
+  if (disc > term) { const tv = baseFCF*(1+term)/(disc-term); pv += tv/Math.pow(1+disc,10); }
+  const iv  = pv / shares;
+  const mos = (iv - curr) / iv * 100;
+  const c   = iv > curr ? 'var(--green)' : 'var(--red)';
+  el('dcfResult').innerHTML = `
+    <div class="iv" style="color:${c}">$${fmtNum(iv)}</div>
+    <div style="font-size:11px;color:var(--text2)">Intrinsic Value (10Y DCF)</div>
+    <div class="mos" style="${clr(mos)}">Margin of Safety: ${mos>0?'+':''}${fmtPct(mos)}</div>
+    <div style="font-size:11px;color:var(--text2);margin-top:4px">Current: $${fmtNum(curr)}</div>`;
+}
+
+// ── HEALTH ────────────────────────────────────────────────────────────────────
+function renderHealth(m) {
+  el('healthContent').innerHTML = metricRows([
+    ['Current Ratio',     fmtNum(m.currentRatioAnnual, 2)],
+    ['Quick Ratio',       fmtNum(m.quickRatioAnnual, 2)],
+    ['Debt/Equity',       fmtNum(m['totalDebt/totalEquityAnnual'], 2)],
+    ['LT Debt/Equity',    fmtNum(m['longTermDebt/equityAnnual'], 2)],
+    ['Interest Coverage', fmtNum(m.netInterestCoverageAnnual, 1)],
+    ['Net Debt',          m.netDebtAnnual != null ? fmtM(m.netDebtAnnual) : '—'],
+    ['Cash/Share',        m.cashPerShareAnnual ? '$'+fmtNum(m.cashPerShareAnnual) : '—'],
+    ['Book Value/Sh',     m.bookValuePerShareAnnual ? '$'+fmtNum(m.bookValuePerShareAnnual) : '—'],
+  ]);
+}
+
+// ── PROFITABILITY ─────────────────────────────────────────────────────────────
+function renderProfitability(m) {
+  el('profitContent').innerHTML = metricRows([
+    ['Gross Margin (TTM)',  fmtPct(m.grossMarginTTM)],
+    ['Net Profit Margin',  fmtPct(m.netProfitMarginTTM)],
+    ['Operating Margin',   fmtPct(m.operatingMarginTTM)],
+    ['ROE (TTM)',           fmtPct(m.roeTTM)],
+    ['ROA (TTM)',           fmtPct(m.roaTTM)],
+    ['Asset Turnover',     fmtNum(m.assetTurnoverAnnual, 2)],
+    ['Inventory Turnover', fmtNum(m.inventoryTurnoverAnnual, 1)],
+  ]);
+}
+
+// ── GROWTH ────────────────────────────────────────────────────────────────────
+function renderGrowth(m) {
+  const g = v => { if (v==null||isNaN(v)) return '<span>—</span>'; const c=v>0?'var(--green)':'var(--red)'; return `<span style="color:${c}">${v>0?'+':''}${fmtPct(v)}</span>`; };
+  el('growthContent').innerHTML = `
+    <div class="metric-row"><span class="metric-label">Revenue Growth (TTM)</span><span class="metric-value">${g(m.revenueGrowthTTMYoy)}</span></div>
+    <div class="metric-row"><span class="metric-label">EPS Growth (TTM)</span><span class="metric-value">${g(m.epsGrowthTTMYoy)}</span></div>
+    <div class="metric-row"><span class="metric-label">Revenue Growth 5Y</span><span class="metric-value">${g(m.revenueGrowth5Y)}</span></div>
+    <div class="metric-row"><span class="metric-label">EPS Growth 5Y</span><span class="metric-value">${g(m.epsGrowth5Y)}</span></div>
+    <div class="metric-row"><span class="metric-label">Dividend Growth 5Y</span><span class="metric-value">${g(m.dividendGrowthRate5Y)}</span></div>
+    <div class="metric-row"><span class="metric-label">Book Value Growth 5Y</span><span class="metric-value">${g(m.bookValueGrowth5Y)}</span></div>`;
+}
+
+// ── PIOTROSKI F-SCORE ─────────────────────────────────────────────────────────
+function renderPiotroski(m) {
+  const criteria = [
+    ['ROA Positive',           m.roaTTM > 0],
+    ['Operating CF Positive',  m.roaTTM > 0 && m.currentRatioAnnual > 0],
+    ['ROA Increasing',         m.roaTTM!=null&&m.roa5Y!=null ? m.roaTTM>m.roa5Y : null],
+    ['Accruals (FCF Quality)', m.netProfitMarginTTM>0 && m.operatingMarginTTM>m.netProfitMarginTTM],
+    ['Leverage Stable',        m['totalDebt/totalEquityAnnual']!=null ? m['totalDebt/totalEquityAnnual']<2 : null],
+    ['Current Ratio ≥ 1',      m.currentRatioAnnual >= 1],
+    ['No Dilution Signal',     m.revenuePerShareTTM != null],
+    ['Gross Margin > 20%',     m.grossMarginTTM > 20],
+    ['Asset Turnover Positive',m.assetTurnoverAnnual > 0],
+  ];
+  const score      = criteria.filter(([,v]) => v===true).length;
+  const maxScore   = criteria.filter(([,v]) => v!=null).length;
+  const scoreColor = score>=7 ? 'var(--green)' : score>=5 ? 'var(--yellow)' : 'var(--red)';
+  el('piotroskiContent').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="font-size:36px;font-weight:800;color:${scoreColor}">${score}<span style="font-size:18px;color:var(--text2)">/${maxScore}</span></div>
+      <div><div style="font-weight:600">${score>=7?'Strong':score>=5?'Average':'Weak'} Financial Health</div><div style="font-size:12px;color:var(--text2)">Piotroski F-Score (0-9)</div></div>
+    </div>
+    <div class="f-score-grid">
+      ${criteria.map(([label,pass]) => `
+        <div class="f-item">
+          <div class="f-dot" style="background:${pass===true?'var(--green)':pass===false?'var(--red)':'var(--text2)'}"></div>
+          <span style="font-size:11px">${label}</span>
+        </div>`).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:8px">* Approximate — based on available TTM metrics</div>`;
+}
+
+// ── EARNINGS QUALITY ──────────────────────────────────────────────────────────
+function renderEarningsQuality(m) {
+  const npm=m.netProfitMarginTTM, om=m.operatingMarginTTM, gm=m.grossMarginTTM;
+  const de=m['totalDebt/totalEquityAnnual'];
+  let score=0, items=[];
+
+  const fcfConv = om && npm ? om/npm : null;
+  if (fcfConv != null) {
+    const ok = fcfConv > 1;
+    score += ok ? 25 : fcfConv > 0.7 ? 15 : 5;
+    items.push({ label:'Operating vs Net Margin', value:`${fmtNum(fcfConv,2)}x`, color:ok?'var(--green)':'var(--yellow)', note:ok?'CF > Earnings (quality)':'Watch accruals' });
+  }
+  if (gm != null) {
+    const ok = gm > 30; score += ok ? 25 : gm>15 ? 15 : 5;
+    items.push({ label:'Gross Margin', value:fmtPct(gm), color:ok?'var(--green)':'var(--yellow)', note:ok?'High quality margin':'Below 30%' });
+  }
+  if (npm != null) {
+    const ok = npm > 10; score += ok ? 25 : npm>0 ? 15 : 0;
+    items.push({ label:'Net Profit Margin', value:fmtPct(npm), color:ok?'var(--green)':npm>0?'var(--yellow)':'var(--red)', note:ok?'Healthy profitability':npm>0?'Low margin':'Unprofitable' });
+  }
+  if (de != null) {
+    const ok = de < 1; score += ok ? 25 : de<2 ? 15 : 5;
+    items.push({ label:'Debt/Equity Ratio', value:fmtNum(de,2), color:ok?'var(--green)':'var(--yellow)', note:ok?'Low debt burden':'Moderate/high debt' });
+  }
+
+  const totalScore = Math.min(100, Math.round(score));
+  const qColor     = totalScore>=70 ? 'var(--green)' : totalScore>=40 ? 'var(--yellow)' : 'var(--red)';
+  const qLabel     = totalScore>=70 ? 'High Quality' : totalScore>=40 ? 'Medium Quality' : 'Low Quality';
+
+  el('earningsQualityContent').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="font-size:36px;font-weight:800;color:${qColor}">${totalScore}<span style="font-size:18px;color:var(--text2)">/100</span></div>
+      <div><div style="font-weight:600">${qLabel}</div><div style="font-size:12px;color:var(--text2)">Earnings Quality Score</div></div>
+    </div>
+    ${items.map(i => `
+      <div class="metric-row">
+        <span class="metric-label">${i.label}</span>
+        <span class="metric-value" style="color:${i.color}">${i.value}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text2);padding:0 0 6px;border-bottom:1px solid var(--border)">${i.note}</div>
+    `).join('')}`;
+}
+
+// ── FORWARD OUTLOOK ───────────────────────────────────────────────────────────
+function renderForwardOutlook(earnings) {
+  el('epsEstContent').innerHTML = '<p style="color:var(--text2);font-size:13px">📌 EPS estimates require Finnhub premium.</p>';
+  el('revEstContent').innerHTML = '<p style="color:var(--text2);font-size:13px">📌 Revenue estimates require Finnhub premium.</p>';
+
+  if (!earnings || !earnings.length) { el('earningsContent').innerHTML='<p style="color:var(--text2);font-size:13px">No earnings data.</p>'; return; }
+
+  const dates = earnings.filter(e=>e.period).map(e=>new Date(e.period)).sort((a,b)=>b-a);
+  let nextEarnings = 'Unknown';
+  if (dates.length) {
+    const last = dates[0]; const next = new Date(last); next.setDate(next.getDate()+91);
+    if (next > new Date()) nextEarnings = next.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'});
+  }
+
+  el('earningsContent').innerHTML = `
+    ${nextEarnings !== 'Unknown' ? `<div style="background:var(--surface2);border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">📅</span><div><div style="font-size:12px;color:var(--text2)">Next Earnings (Estimated)</div><div style="font-weight:700">${nextEarnings}</div></div></div>` : ''}
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Period</th><th>Estimate</th><th>Actual</th><th>Surprise</th><th>Beat?</th></tr></thead>
+      <tbody>
+        ${earnings.slice(0,8).map(e => {
+          const surp = e.actual!=null&&e.estimate!=null ? e.actual-e.estimate : null;
+          const beat = surp!=null && surp>=0;
+          const pct  = surp!=null&&e.estimate ? surp/Math.abs(e.estimate)*100 : null;
+          return `<tr>
+            <td>${e.period||'—'}</td>
+            <td>$${fmtNum(e.estimate)}</td>
+            <td>$${fmtNum(e.actual)}</td>
+            <td class="${surp==null?'':beat?'beat':'miss'}">${surp==null?'—':(beat?'+':'')+fmtNum(surp)}</td>
+            <td>${surp==null?'—':beat?'<span style="color:var(--green)">✓ Beat</span>':'<span style="color:var(--red)">✗ Miss</span>'} ${pct!=null?`<span style="font-size:10px;color:var(--text2)">(${beat?'+':''}${fmtPct(pct)})</span>`:''}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--text2);margin-top:6px">Beat rate: ${fmtPct(earnings.filter(e=>e.actual!=null&&e.estimate!=null&&e.actual>=e.estimate).length/earnings.filter(e=>e.actual!=null&&e.estimate!=null).length*100)} of last ${earnings.filter(e=>e.actual!=null&&e.estimate!=null).length} quarters</div>`;
+}
+
+// ── INSIDER SENTIMENT ─────────────────────────────────────────────────────────
+function renderInsider(data) {
+  if (!data||!data.data||!data.data.length) { el('insiderContent').innerHTML='<p style="color:var(--text2);font-size:13px">No data.</p>'; return; }
+  const rows = data.data.slice(-6);
+  const avg  = rows.reduce((s,r)=>s+(r.mspr||0),0) / (rows.length||1);
+  const c    = avg>0 ? 'var(--green)' : 'var(--red)';
+  const sent = avg>10 ? 'Bullish' : avg<-10 ? 'Bearish' : 'Neutral';
+  el('insiderContent').innerHTML = `
+    <div style="text-align:center;margin-bottom:12px"><div style="font-size:22px;font-weight:800;color:${c}">${sent}</div><div style="font-size:12px;color:var(--text2)">Avg MSPR: ${fmtNum(avg,1)} · Last 6 months</div></div>
+    <table>
+      <thead><tr><th>Month</th><th>Net Change</th><th>MSPR</th></tr></thead>
+      <tbody>${rows.map(r=>{const mc=(r.mspr||0)>0?'var(--green)':'var(--red)';const s=(r.change||0)>=0?'beat':'miss';return`<tr><td>${r.year}-${String(r.month).padStart(2,'0')}</td><td class="${s}">${(r.change||0)>=0?'+':''}${fmtNum(r.change||0,0)}</td><td style="color:${mc}">${fmtNum(r.mspr,1)}</td></tr>`;}).join('')}</tbody>
+    </table>
+    <div style="font-size:11px;color:var(--text2);margin-top:6px">MSPR = Monthly Share Purchase Ratio</div>`;
+}
+
+// ── SECTOR & RELATIVE STRENGTH ────────────────────────────────────────────────
+async function renderSector(profile, quote) {
+  const industry  = profile.finnhubIndustry || '';
+  const sectorETF = Object.entries(SECTOR_ETFS).find(([k]) => industry.toLowerCase().includes(k.toLowerCase()))?.[1] || null;
+
+  let html = `<div class="metric-row"><span class="metric-label">Industry</span><span class="metric-value">${profile.finnhubIndustry||'N/A'}</span></div>`;
+  html    += `<div class="metric-row"><span class="metric-label">Today's Change</span><span class="metric-value" style="${clr(quote.dp)}">${quote.dp>=0?'+':''}${fmtPct(quote.dp)}</span></div>`;
+
+  const m  = currentData.metrics?.metric || {};
+  const hi = m['52WeekHigh'], lo = m['52WeekLow'];
+  if (hi && lo) {
+    const pos = ((quote.c-lo)/(hi-lo)*100).toFixed(1);
+    html += `<div class="metric-row"><span class="metric-label">52W Range Position</span><span class="metric-value">${pos}%</span></div>`;
+    html += `<div class="metric-row"><span class="metric-label">% Below 52W High</span><span class="metric-value" style="color:var(--red)">${fmtPct((quote.c/hi-1)*100)}</span></div>`;
+    html += `<div class="metric-row"><span class="metric-label">% Above 52W Low</span><span class="metric-value" style="color:var(--green)">+${fmtPct((quote.c/lo-1)*100)}</span></div>`;
+  }
+
+  if (sectorETF) {
+    try {
+      const [etfQ, spyQ] = await Promise.all([safeApi('/quote',{symbol:sectorETF}), safeApi('/quote',{symbol:'SPY'})]);
+      if (etfQ && spyQ) {
+        html += `<div style="margin-top:10px;font-size:11px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px">Today vs Market</div>`;
+        html += `<div class="metric-row"><span class="metric-label">S&amp;P 500 (SPY)</span><span class="metric-value" style="${clr(spyQ.dp)}">${spyQ.dp>=0?'+':''}${fmtPct(spyQ.dp)}</span></div>`;
+        html += `<div class="metric-row"><span class="metric-label">Sector ETF (${sectorETF})</span><span class="metric-value" style="${clr(etfQ.dp)}">${etfQ.dp>=0?'+':''}${fmtPct(etfQ.dp)}</span></div>`;
+        const rel = quote.dp - spyQ.dp;
+        html += `<div class="metric-row"><span class="metric-label">Relative Strength (vs SPY)</span><span class="metric-value" style="${clr(rel)}">${rel>=0?'+':''}${fmtPct(rel)}</span></div>`;
+      }
+    } catch {}
+  }
+
+  el('sectorContent').innerHTML = html;
+}
+
+// ── PEER COMPARISON ───────────────────────────────────────────────────────────
+async function renderPeers(peers, ticker, profile, metrics, quote) {
+  if (!peers || !peers.length) { el('peerContent').innerHTML='<p style="color:var(--text2);font-size:13px">No peer data available.</p>'; return; }
+
+  const peerList = peers.filter(p => p !== ticker).slice(0, 4);
+  try {
+    const peerData = await Promise.all(peerList.map(async p => {
+      const [pq, pm] = await Promise.all([safeApi('/quote',{symbol:p}), safeApi('/stock/metric',{symbol:p,metric:'all'})]);
+      return { symbol:p, quote:pq, metrics:pm };
+    }));
+
+    const m   = metrics.metric || {};
+    const all = [{ symbol:ticker, quote, metrics, isMain:true }, ...peerData.map(p=>({...p,isMain:false}))];
+
+    el('peerContent').innerHTML = `
+      <div class="peer-table-wrap">
+      <table>
+        <thead>
+          <tr><th>Ticker</th><th>Price</th><th>Chg%</th><th>Mkt Cap</th><th>P/E</th><th>P/S</th><th>Gross Margin</th><th>Rev Growth</th><th>Net Margin</th></tr>
+        </thead>
+        <tbody>
+          ${all.map(p => {
+            const pm = p.metrics?.metric || {};
+            const pq = p.quote || {};
+            const mc = p.metrics?.metric?.marketCapitalization || null;
+            return `<tr style="${p.isMain?'background:var(--surface2);font-weight:600':''}">
+              <td style="color:${p.isMain?'var(--accent)':'var(--text)'}">${p.symbol}${p.isMain?' ★':''}</td>
+              <td>$${fmtNum(pq.c)}</td>
+              <td style="${clr(pq.dp)}">${pq.dp!=null?(pq.dp>=0?'+':'')+fmtPct(pq.dp):'—'}</td>
+              <td>${mc?fmtM(mc*1e6):'—'}</td>
+              <td>${fmtNum(pm.peBasicExclExtraTTM,1)}</td>
+              <td>${fmtNum(pm.psTTM,2)}</td>
+              <td>${fmtPct(pm.grossMarginTTM)}</td>
+              <td style="${clr(pm.revenueGrowthTTMYoy)}">${pm.revenueGrowthTTMYoy!=null?(pm.revenueGrowthTTMYoy>=0?'+':'')+fmtPct(pm.revenueGrowthTTMYoy):'—'}</td>
+              <td>${fmtPct(pm.netProfitMarginTTM)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="font-size:11px;color:var(--text2);margin-top:8px">★ = Current stock · Peers sourced from Finnhub</div>`;
+  } catch {
+    el('peerContent').innerHTML = '<p style="color:var(--text2);font-size:13px">Could not load peer data.</p>';
+  }
+}
+
+// ── FINANCIAL STATEMENTS ──────────────────────────────────────────────────────
+async function renderFinancials(ticker) {
+  try {
+    const data = await safeApi('/stock/financials-reported', { symbol:ticker, freq:'annual' });
+    if (!data || !data.data || !data.data.length) {
+      ['income','balance','cashflow'].forEach(p => el(p+'Panel').innerHTML='<p style="color:var(--text2);font-size:13px;padding:8px 0">Financial statements require Finnhub premium.</p>');
+      return;
+    }
+    const reports = data.data.slice(0, 4);
+    const years   = reports.map(r => r.year||r.period||'').reverse();
+    const getVal  = (r, keys) => {
+      const all = [...(r.report?.bs||[]), ...(r.report?.ic||[]), ...(r.report?.cf||[])];
+      for (const k of (Array.isArray(keys) ? keys : [keys])) {
+        let item = all.find(x => x.concept===k || x.concept==='us-gaap_'+k);
+        if (!item) item = all.find(x => x.label?.toLowerCase()===k.toLowerCase());
+        if (item && item.value!=null) return item.value;
+      }
+      return null;
+    };
+    const buildTable = (rows) => {
+      const rRev = [...reports].reverse();
+      return `<div style="overflow-x:auto"><table>
+        <thead><tr><th>Metric</th>${years.map(y=>`<th>${y}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map(([label,...keys])=>`<tr><td>${label}</td>${rRev.map(r=>`<td>${(v=>v!=null?fmtM(v):'—')(getVal(r,keys))}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`;
+    };
+    el('incomePanel').innerHTML = buildTable([
+      ['Revenue',       'RevenueFromContractWithCustomerExcludingAssessedTax','Revenues'],
+      ['Gross Profit',  'GrossProfit'],
+      ['Operating Income','OperatingIncomeLoss'],
+      ['Net Income',    'NetIncomeLoss'],
+      ['EPS Basic',     'EarningsPerShareBasic'],
+      ['EPS Diluted',   'EarningsPerShareDiluted'],
+      ['R&D Expense',   'ResearchAndDevelopmentExpense'],
+      ['SG&A Expense',  'SellingGeneralAndAdministrativeExpense'],
+    ]);
+    el('balancePanel').innerHTML = buildTable([
+      ['Total Assets',    'Assets'],
+      ['Total Liabilities','Liabilities'],
+      ['Total Equity',    'StockholdersEquity'],
+      ['Cash & Equiv.',   'CashAndCashEquivalentsAtCarryingValue'],
+      ['Current Assets',  'AssetsCurrent'],
+      ['Current Liabilities','LiabilitiesCurrent'],
+      ['Long-Term Debt',  'LongTermDebt'],
+      ['Goodwill',        'Goodwill'],
+    ]);
+    const cfReports = [...reports].reverse();
+    const cfTable   = buildTable([
+      ['Operating CF',  'NetCashProvidedByUsedInOperatingActivities'],
+      ['Investing CF',  'NetCashProvidedByUsedInInvestingActivities'],
+      ['Financing CF',  'NetCashProvidedByUsedInFinancingActivities'],
+      ['CapEx',         'PaymentsToAcquirePropertyPlantAndEquipment'],
+      ['Dividends Paid','PaymentsOfDividends'],
+    ]);
+    const freeCFRow = cfReports.map(r => {
+      const op  = getVal(r,'NetCashProvidedByUsedInOperatingActivities');
+      const cap = getVal(r,'PaymentsToAcquirePropertyPlantAndEquipment');
+      return `<td>${op!=null&&cap!=null?fmtM(op-cap):'—'}</td>`;
+    }).join('');
+    el('cashflowPanel').innerHTML = cfTable.replace('</tbody>', `<tr><td>Free Cash Flow</td>${freeCFRow}</tr></tbody>`);
+  } catch {
+    ['income','balance','cashflow'].forEach(p => el(p+'Panel').innerHTML='<p style="color:var(--text2);font-size:13px;padding:8px 0">Failed to load.</p>');
+  }
+}
+
+// ── PROFILE ───────────────────────────────────────────────────────────────────
+function renderProfile(profile) {
+  const ticker    = profile.ticker || '';
+  const secUrl    = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${ticker}&type=10-K&dateb=&owner=include&count=10`;
+  const safeTicker = esc(ticker);
+  const safeWeb   = safeUrl(profile.weburl || '');
+  el('profileContent').innerHTML = `
+    ${safeWeb ? `<a href="${safeWeb}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-size:13px;display:block;margin-bottom:10px">${esc(profile.weburl)}</a>` : ''}
+    ${metricRows([
+      ['Full Name',  esc(profile.name||'—')],
+      ['Ticker',     safeTicker],
+      ['Exchange',   esc(profile.exchange||'—')],
+      ['Currency',   esc(profile.currency||'—')],
+      ['Country',    esc(profile.country||'—')],
+      ['Industry',   esc(profile.finnhubIndustry||'—')],
+      ['IPO Date',   esc(profile.ipo||'—')],
+      ['Shares Out.',profile.shareOutstanding?fmtM(profile.shareOutstanding*1e6):'—'],
+    ])}
+    <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+      <a href="${esc(secUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-size:12px;background:var(--surface2);padding:7px 12px;border-radius:6px;text-decoration:none;display:block">📄 SEC Filings (10-K, 10-Q) →</a>
+      <a href="https://finance.yahoo.com/quote/${safeTicker}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-size:12px;background:var(--surface2);padding:7px 12px;border-radius:6px;text-decoration:none;display:block">📊 Yahoo Finance →</a>
+      <a href="https://stockanalysis.com/stocks/${safeTicker.toLowerCase()}/" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-size:12px;background:var(--surface2);padding:7px 12px;border-radius:6px;text-decoration:none;display:block">📈 Stock Analysis →</a>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:8px">Key risk factors available in SEC 10-K filings (linked above)</div>`;
+}
+
+// ── NEWS ──────────────────────────────────────────────────────────────────────
+function renderNews(newsArr) {
+  if (!newsArr || !newsArr.length) { el('newsContent').innerHTML='<p style="color:var(--text2);font-size:13px">No recent news.</p>'; return; }
+  el('newsContent').innerHTML = newsArr.slice(0,6).map(n => {
+    const d      = new Date(n.datetime*1000).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    const newsUrl = safeUrl(n.url||'');
+    const imgUrl  = safeUrl(n.image||'');
+    return `<div class="news-item">${imgUrl?`<img class="news-img" src="${imgUrl}" onerror="this.style.display='none'" loading="lazy"/>`:''}
+    <div class="news-content"><div class="news-headline">${newsUrl?`<a href="${newsUrl}" target="_blank" rel="noopener noreferrer">${esc(n.headline)}</a>`:esc(n.headline)}</div><div class="news-meta">${esc(n.source)} · ${d}</div></div></div>`;
+  }).join('');
+}
+
+// ── COMPARE MODE ──────────────────────────────────────────────────────────────
+function toggleCompare() {
+  const bar = el('compareBar');
+  const isHidden = bar.style.display !== 'flex';
+  bar.style.display = isHidden ? 'flex' : 'none';
+  if (isHidden) { bar.scrollIntoView({behavior:'smooth',block:'nearest'}); setTimeout(()=>el('compareInput')?.focus(),300); }
+}
+el('compareInput')?.addEventListener('keydown', e => { if (e.key==='Enter') runCompare(); });
+
+async function runCompare() {
+  const ticker2 = el('compareInput').value.trim().toUpperCase();
+  if (!ticker2) { el('compareInput').focus(); return; }
+  if (!currentData.ticker) {
+    el('comparePanel').style.display='block';
+    el('compareContent').innerHTML='<p style="color:var(--yellow);font-size:13px">⚠ Please search for a stock first, then compare.</p>';
+    el('comparePanel').scrollIntoView({behavior:'smooth'});
+    return;
+  }
+  el('comparePanel').style.display='block';
+  el('compareContent').innerHTML='<div style="color:var(--text2);font-size:13px">Loading comparison…</div>';
+  el('comparePanel').scrollIntoView({behavior:'smooth'});
+  try {
+    const [p2, q2, m2] = await Promise.all([
+      api('/stock/profile2',{symbol:ticker2}),
+      api('/quote',{symbol:ticker2}),
+      api('/stock/metric',{symbol:ticker2,metric:'all'}),
+    ]);
+    const t1=currentData.ticker, p1=currentData.profile, q1=currentData.quote, m1=currentData.metrics.metric||{};
+    const pm2=m2.metric||{};
+    const rows=[
+      ['Price',          '$'+fmtNum(q1.c),  '$'+fmtNum(q2.c)],
+      ['Change Today',   fmtPct(q1.dp),      fmtPct(q2.dp)],
+      ['Market Cap',     fmtM((p1.marketCapitalization||0)*1e6), fmtM((p2.marketCapitalization||0)*1e6)],
+      ['P/E (TTM)',      fmtNum(m1.peBasicExclExtraTTM,1), fmtNum(pm2.peBasicExclExtraTTM,1)],
+      ['P/S (TTM)',      fmtNum(m1.psTTM,2), fmtNum(pm2.psTTM,2)],
+      ['P/B',            fmtNum(m1.pbAnnual,2), fmtNum(pm2.pbAnnual,2)],
+      ['Gross Margin',   fmtPct(m1.grossMarginTTM), fmtPct(pm2.grossMarginTTM)],
+      ['Net Margin',     fmtPct(m1.netProfitMarginTTM), fmtPct(pm2.netProfitMarginTTM)],
+      ['ROE (TTM)',      fmtPct(m1.roeTTM), fmtPct(pm2.roeTTM)],
+      ['ROA (TTM)',      fmtPct(m1.roaTTM), fmtPct(pm2.roaTTM)],
+      ['Rev Growth TTM', fmtPct(m1.revenueGrowthTTMYoy), fmtPct(pm2.revenueGrowthTTMYoy)],
+      ['EPS Growth TTM', fmtPct(m1.epsGrowthTTMYoy), fmtPct(pm2.epsGrowthTTMYoy)],
+      ['Debt/Equity',    fmtNum(m1['totalDebt/totalEquityAnnual'],2), fmtNum(pm2['totalDebt/totalEquityAnnual'],2)],
+      ['Current Ratio',  fmtNum(m1.currentRatioAnnual,2), fmtNum(pm2.currentRatioAnnual,2)],
+      ['Beta',           fmtNum(m1.beta,2), fmtNum(pm2.beta,2)],
+      ['52W High',       '$'+fmtNum(m1['52WeekHigh']), '$'+fmtNum(pm2['52WeekHigh'])],
+      ['52W Low',        '$'+fmtNum(m1['52WeekLow']),  '$'+fmtNum(pm2['52WeekLow'])],
+    ];
+    el('compareContent').innerHTML = `
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Metric</th><th style="color:var(--accent)">${t1}</th><th style="color:var(--purple)">${ticker2}</th></tr></thead>
+        <tbody>${rows.map(([l,v1,v2])=>`<tr><td>${l}</td><td style="color:var(--accent);font-weight:600">${v1}</td><td style="color:var(--purple);font-weight:600">${v2}</td></tr>`).join('')}</tbody>
+      </table></div>`;
+  } catch (e) {
+    el('compareContent').innerHTML = `<p style="color:var(--red);font-size:13px">Could not load data for ${ticker2}</p>`;
+  }
+}
+
+function clearCompare() {
+  el('comparePanel').style.display='none';
+  el('compareBar').style.display='none';
+  if (el('compareInput')) el('compareInput').value='';
+}
+
+// ── WATCHLIST PANEL ───────────────────────────────────────────────────────────
+function showWatchlistPanel() {
+  const wl      = getWatchlist();
+  const panel   = el('watchlistPanel');
+  const content = el('watchlistContent');
+  if (!wl.length) {
+    content.innerHTML = '<p style="color:var(--text2);font-size:13px;text-align:center;padding:20px 0">No stocks in watchlist yet.<br>Search a stock and click ☆ Watchlist.</p>';
+  } else {
+    content.innerHTML = wl.map(t => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
+        <button onclick="document.getElementById('watchlistPanel').style.display='none';analyze('${t}')" style="background:none;border:none;color:var(--accent);font-size:14px;font-weight:700;cursor:pointer">${t}</button>
+        <button onclick="toggleWatchlist('${t}');showWatchlistPanel()" style="background:none;border:none;color:var(--red);font-size:12px;cursor:pointer">✕ Remove</button>
+      </div>`).join('');
+  }
+  panel.style.display = 'flex';
+}
+
+// ── FINANCIAL TABS ────────────────────────────────────────────────────────────
+function switchFinTab(tab, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.fin-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  el(tab+'Panel').classList.add('active');
+}
+
+// ── STICKY MINI HEADER ────────────────────────────────────────────────────────
+function updateStickyBar(profile, quote) {
+  if (!profile || !quote) return;
+  const change = quote.d || 0, pct = quote.dp || 0;
+  const dir    = change >= 0;
+  el('sbTicker').textContent = profile.ticker || '';
+  el('sbName').textContent   = profile.name   || '';
+  el('sbPrice').textContent  = '$' + fmtNum(quote.c);
+  el('sbChg').textContent    = (dir?'+':'') + fmtNum(change) + ' (' + fmtPct(pct) + ')';
+  el('sbChg').style.color    = dir ? 'var(--green)' : 'var(--red)';
+}
+
+window.addEventListener('scroll', () => {
+  const bar = el('stickyBar');
+  if (!bar) return;
+  const companyHeader = el('companyHeader');
+  if (!companyHeader || !currentData.profile) { bar.style.display='none'; return; }
+  bar.style.display = companyHeader.getBoundingClientRect().bottom < 0 ? 'flex' : 'none';
+}, { passive:true });
+
+// ── DCF PREFERENCES ───────────────────────────────────────────────────────────
+function saveDCFPrefs() {
+  try {
+    const prefs = {
+      growth: el('dcfGrowth')?.value,
+      margin: el('dcfMargin')?.value,
+      disc:   el('dcfDisc')?.value,
+      term:   el('dcfTerm')?.value,
+    };
+    localStorage.setItem('siq_dcfprefs', JSON.stringify(prefs));
+  } catch {}
+}
+function loadDCFPrefs() {
+  try { const raw=localStorage.getItem('siq_dcfprefs'); if(!raw)return null; return JSON.parse(raw); }
+  catch { return null; }
+}
+
+// ── DEVICE DETECTION ──────────────────────────────────────────────────────────
+const DEVICE = (() => {
+  const ua    = navigator.userAgent;
+  const w     = window.innerWidth;
+  const touch = navigator.maxTouchPoints > 0;
+  if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua) || (touch && w>=600 && w<=1024)) return 'tablet';
+  if (/iPhone|Android.*Mobile|Mobile/i.test(ua) || w < 600) return 'mobile';
+  return 'desktop';
+})();
+document.body.classList.add('device-' + DEVICE);
+
+function updateBottomBar(ticker) {
+  if (DEVICE !== 'mobile') return;
+  el('bbCompare').style.display  = ticker ? '' : 'none';
+  el('bbAddWatch').style.display = ticker ? '' : 'none';
+  el('bbExport').style.display   = ticker ? '' : 'none';
+  const inWl = ticker && getWatchlist().includes(ticker);
+  const icon = el('bbAddWatchIcon');
+  if (icon) icon.textContent = inWl ? '★' : '☆';
+}
+
+window.addEventListener('resize', () => {
+  const bar = el('bottomBar');
+  if (bar) bar.style.display = window.innerWidth <= 600 ? 'flex' : 'none';
+}, { passive:true });
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+(function initLanding() {
+  const r   = getRecents();
+  const box = el('landingRecents');
+  if (!box || !r.length) return;
+  box.innerHTML = `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Recent Searches</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">
+      ${r.map(t=>`<button class="qp-btn" onclick="analyze('${t}')" style="border-color:var(--accent);color:var(--accent)">${t}</button>`).join('')}
+    </div>`;
+})();

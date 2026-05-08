@@ -292,8 +292,10 @@ http.createServer(async (req, res) => {
   // Strict allowlist: only serve index.html (and assets in /public/ if needed)
   // Never expose server.js, .env, or any other server-side file.
   const STATIC_MAP = {
-    '/':           path.join(ROOT, 'index.html'),
-    '/index.html': path.join(ROOT, 'index.html'),
+    '/':            path.join(ROOT, 'index.html'),
+    '/index.html':  path.join(ROOT, 'index.html'),
+    '/style.css':   path.join(ROOT, 'style.css'),
+    '/app.js':      path.join(ROOT, 'app.js'),
   };
   const staticFile = STATIC_MAP[pathname];
   if (!staticFile) {
@@ -303,7 +305,7 @@ http.createServer(async (req, res) => {
     if (err) { send(res, 404, 'text/plain', 'Not found'); return; }
     const ext = path.extname(staticFile).toLowerCase();
     res.setHeader('Content-Type', MIME[ext] || 'text/plain');
-    // HTML: never cache — always fetch fresh so deploys are instant
+    // Never cache any static file — ensures deploys appear instantly
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
