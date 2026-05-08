@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#161b22"/>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self';">
 <meta name="referrer" content="no-referrer"/>
 <title>StockIQ — Fundamental Analysis</title>
@@ -99,7 +103,8 @@ main{padding:20px;max-width:1400px;margin:0 auto;}
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;}
 .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px;}
 @media(max-width:1100px){.grid-4{grid-template-columns:repeat(2,1fr);}}
-@media(max-width:760px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr;}}
+@media(max-width:900px){.grid-3{grid-template-columns:1fr 1fr;}}
+@media(max-width:600px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr;}}
 
 /* CARD */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;}
@@ -226,6 +231,116 @@ tr:last-child td{border-bottom:none;}
 #stickyBar .sb-chg{font-size:12px;font-weight:600;}
 #stickyBar .sb-btn{background:var(--accent);color:#000;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;margin-left:auto;}
 
+/* ══════════════════════════════════════
+   RESPONSIVE — TABLET (≤ 900px)
+══════════════════════════════════════ */
+@media(max-width:900px){
+  main{padding:14px;}
+  .company-name{font-size:20px;}
+  .current-price{font-size:26px;}
+  /* Price chart card: full width on tablet */
+  .grid-3>[style*="grid-column:span 2"]{grid-column:span 1;}
+  .chart-wrap{height:200px;}
+  /* Valuation deep-dive: stack to 1 col on tablet */
+  .grid-3 .grid-3{grid-template-columns:1fr;}
+  #stickyBar .sb-name{display:none;}
+}
+
+/* ══════════════════════════════════════
+   RESPONSIVE — MOBILE (≤ 600px)
+══════════════════════════════════════ */
+@media(max-width:600px){
+  /* NAV */
+  nav{padding:0 12px;gap:8px;height:56px;}
+  .logo{font-size:17px;}
+  .search-wrap{max-width:none;min-width:0;}
+  /* Hide secondary nav buttons — shown in bottom bar instead */
+  #watchlistBtn,#compareToggleBtn,#exportBtn,#wlViewBtn{display:none!important;}
+  #searchBtn{padding:7px 12px;font-size:12px;}
+
+  /* MAIN */
+  main{padding:10px;}
+
+  /* LANDING */
+  #landing{padding:40px 12px;}
+  #landing h1{font-size:28px;}
+  #landing p{font-size:15px;}
+
+  /* COMPANY HEADER — stack vertically */
+  .company-header{flex-direction:column;gap:12px;}
+  .company-logo,.company-logo-ph{width:46px;height:46px;font-size:16px;}
+  .company-name{font-size:18px;}
+  .price-block{text-align:left;width:100%;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .current-price{font-size:28px;}
+  .price-sub{display:none;}
+
+  /* SCORECARD */
+  .scorecard{padding:14px;}
+  .scorecard-header{gap:12px;}
+  .score-circle{width:72px;height:72px;}
+  .score-circle .score-num{font-size:22px;}
+  .verdict-badge{font-size:15px;}
+
+  /* CHART */
+  .chart-wrap{height:160px;}
+
+  /* DCF */
+  .dcf-controls{grid-template-columns:1fr;}
+
+  /* PIOTROSKI */
+  .f-score-grid{grid-template-columns:1fr;}
+
+  /* CARDS */
+  .card{padding:14px;}
+  .stat-card{padding:12px;}
+  .stat-value{font-size:17px;}
+
+  /* STICKY BAR */
+  #stickyBar{height:42px;padding:0 12px;gap:8px;top:56px;}
+  #stickyBar .sb-name{display:none;}
+  #stickyBar .sb-price{font-size:14px;}
+  #stickyBar .sb-btn{padding:4px 10px;font-size:11px;}
+
+  /* TABLES — smaller font */
+  table{font-size:11px;}
+  th,td{padding:6px 3px;}
+
+  /* TOAST — bottom centre */
+  #toastContainer{bottom:70px;right:12px;left:12px;align-items:center;}
+
+  /* WATCHLIST MODAL */
+  #watchlistPanel>div{width:100%;max-width:100%;margin:0;border-radius:var(--radius) var(--radius) 0 0;position:fixed;bottom:0;left:0;right:0;}
+  #watchlistPanel{align-items:flex-end;}
+
+  /* Span-2 cards: full width on mobile */
+  [style*="grid-column:span 2"]{grid-column:span 1!important;}
+}
+
+/* ══════════════════════════════════════
+   MOBILE BOTTOM ACTION BAR
+══════════════════════════════════════ */
+#bottomBar{
+  display:none;
+  position:fixed;bottom:0;left:0;right:0;z-index:200;
+  background:var(--surface);border-top:1px solid var(--border);
+  height:58px;
+  align-items:center;justify-content:space-around;
+  padding:0 8px;
+  box-shadow:0 -4px 20px rgba(0,0,0,.3);
+}
+.bb-btn{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:none;border:none;color:var(--text2);font-size:10px;
+  cursor:pointer;padding:6px 12px;border-radius:8px;
+  transition:color .2s,background .2s;
+  min-width:56px;
+}
+.bb-btn .bb-icon{font-size:18px;line-height:1;}
+.bb-btn:active,.bb-btn.active{color:var(--accent);background:rgba(88,166,255,.1);}
+@media(max-width:600px){
+  #bottomBar{display:flex;}
+  main{padding-bottom:70px;}  /* don't hide content behind bar */
+}
 /* PRINT */
 @media print{
   nav,#compareBar,#landing,#loading,#error,.nav-btn,.qp-btn,#exportBtn{display:none!important;}
@@ -427,6 +542,25 @@ tr:last-child td{border-bottom:none;}
 
 </div><!-- /dashboard -->
 
+<!-- MOBILE BOTTOM ACTION BAR -->
+<div id="bottomBar">
+  <button class="bb-btn" id="bbSearch" onclick="document.getElementById('searchInput').focus();window.scrollTo({top:0,behavior:'smooth'})">
+    <span class="bb-icon">⌕</span><span>Search</span>
+  </button>
+  <button class="bb-btn" id="bbWatchlist" onclick="showWatchlistPanel()">
+    <span class="bb-icon">★</span><span>Watchlist</span>
+  </button>
+  <button class="bb-btn" id="bbCompare" style="display:none" onclick="toggleCompare()">
+    <span class="bb-icon">⇄</span><span>Compare</span>
+  </button>
+  <button class="bb-btn" id="bbAddWatch" style="display:none" onclick="toggleWatchlist(currentData.ticker)">
+    <span class="bb-icon" id="bbAddWatchIcon">☆</span><span>Watch</span>
+  </button>
+  <button class="bb-btn" id="bbExport" style="display:none" onclick="window.print()">
+    <span class="bb-icon">⬇</span><span>Export</span>
+  </button>
+</div>
+
 <!-- WATCHLIST PANEL (floating modal) -->
 <div id="watchlistPanel" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:500;align-items:center;justify-content:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:340px;max-width:90vw;max-height:80vh;overflow-y:auto;">
@@ -555,6 +689,7 @@ function toggleWatchlist(ticker){
   else{wl.splice(idx,1);toast(`${ticker} removed from watchlist`,'info');}
   try{localStorage.setItem('siq_watchlist',JSON.stringify(wl));}catch{}
   updateWatchlistBtn(ticker);
+  updateBottomBar(ticker);
 }
 function updateWatchlistBtn(ticker){
   const btn=el('watchlistBtn');
@@ -629,6 +764,7 @@ async function analyze(ticker){
     el('watchlistBtn').style.display='';
     addRecent(ticker);
     updateWatchlistBtn(ticker);
+    updateBottomBar(ticker);
     toast(`Loaded ${profile.name||ticker}`,'success',2000);
 
     const m=metrics.metric||{};
@@ -1465,6 +1601,41 @@ function loadDCFPrefs(){
     return JSON.parse(raw);
   }catch{return null;}
 }
+
+// ── DEVICE DETECTION ──
+const DEVICE = (() => {
+  const ua = navigator.userAgent;
+  const w  = window.innerWidth;
+  const touch = navigator.maxTouchPoints > 0;
+  if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua) || (touch && w >= 600 && w <= 1024))
+    return 'tablet';
+  if (/iPhone|Android.*Mobile|Mobile/i.test(ua) || w < 600)
+    return 'mobile';
+  return 'desktop';
+})();
+
+// Apply device class to body for CSS targeting
+document.body.classList.add('device-' + DEVICE);
+
+// On mobile: show bottom bar buttons when stock is loaded
+function updateBottomBar(ticker) {
+  if (DEVICE !== 'mobile') return;
+  el('bbCompare').style.display  = ticker ? '' : 'none';
+  el('bbAddWatch').style.display = ticker ? '' : 'none';
+  el('bbExport').style.display   = ticker ? '' : 'none';
+  // Update ☆/★ icon
+  const inWl = ticker && getWatchlist().includes(ticker);
+  const icon = el('bbAddWatchIcon');
+  if (icon) icon.textContent = inWl ? '★' : '☆';
+}
+
+// Re-check window size on resize (e.g. rotate phone)
+window.addEventListener('resize', () => {
+  const w = window.innerWidth;
+  // Show/hide bottom bar based on actual width
+  const bar = el('bottomBar');
+  if (bar) bar.style.display = w <= 600 ? 'flex' : 'none';
+}, { passive: true });
 
 // ── INIT: show recent searches on landing ──
 (function initLanding(){
