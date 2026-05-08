@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__read_console_messages",
+      "mcp__Claude_in_Chrome__javascript_tool",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(node -e \"const fs=require\\('fs'\\); const s=fs.readFileSync\\('index.html','utf8'\\); console.log\\('BASE check:', s.includes\\(\\\\\"BASE='/api'\\\\\"\\)\\); console.log\\('API_KEY removed:', !s.includes\\('d7993ehr01qqpmhft4lgd'\\)\\); console.log\\('toast fn:', s.includes\\('function toast\\('\\)\\); console.log\\('watchlist fn:', s.includes\\('function toggleWatchlist\\('\\)\\); console.log\\('lsGet fn:', s.includes\\('function lsGet\\('\\)\\); console.log\\('recent fn:', s.includes\\('function getRecents\\('\\)\\); console.log\\('watchlistPanel:', s.includes\\('id=\\\\\"watchlistPanel\\\\\"'\\)\\);\")",
+      "Bash(pkill -f \"node server.js\")",
+      "Bash(node server.js)",
+      "Bash(curl -s http://localhost:3000/api/status)",
+      "Bash(curl -s \"http://localhost:3000/api/quote?symbol=AAPL\")",
+      "Bash(node -e ' *)"
+    ]
+  }
+}
