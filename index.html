@@ -575,6 +575,9 @@ tr:last-child td{border-bottom:none;}
 
 <script>
 const BASE='/api';
+const APP_VERSION='1.4';
+// Clear localStorage cache if app version changed
+(()=>{const v=localStorage.getItem('siq_version');if(v!==APP_VERSION){for(const k of Object.keys(localStorage))if(k.startsWith('siq_')&&k!=='siq_watchlist'&&k!=='siq_recents'&&k!=='siq_dcfprefs')localStorage.removeItem(k);localStorage.setItem('siq_version',APP_VERSION);}})();
 let priceChartInst=null;
 let currentData={};
 let compareData={};

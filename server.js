@@ -303,6 +303,10 @@ http.createServer(async (req, res) => {
     if (err) { send(res, 404, 'text/plain', 'Not found'); return; }
     const ext = path.extname(staticFile).toLowerCase();
     res.setHeader('Content-Type', MIME[ext] || 'text/plain');
+    // HTML: never cache — always fetch fresh so deploys are instant
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.writeHead(200);
     res.end(data);
   });
