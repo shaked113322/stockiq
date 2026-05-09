@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -100,10 +100,13 @@ function lsSet(key, data) {
 }
 
 // ── API PROXY FETCH ────────────────────────────────────────────────────────────
+// All calls go to /api/proxy?_ep=<endpoint>&<params>
+// This avoids Vercel routing /api/stock/* as static files (no matching .js file).
 async function api(endpoint, params = {}, retries = 2) {
-  const qs       = new URLSearchParams(params).toString();
-  const fullUrl  = BASE + endpoint + (qs ? '?' + qs : '');
-  const cacheKey = fullUrl;
+  const ep       = endpoint.replace(/^\//, '');                        // 'stock/profile2'
+  const qs       = new URLSearchParams({ _ep: ep, ...params }).toString();
+  const fullUrl  = BASE + '/proxy?' + qs;
+  const cacheKey = endpoint + '|' + new URLSearchParams(params).toString(); // stable key
   const cached   = lsGet(cacheKey);
   if (cached) return cached;
 
@@ -111,7 +114,7 @@ async function api(endpoint, params = {}, retries = 2) {
 
   // Auto-retry on 429 after a short back-off
   if (res.status === 429 && retries > 0) {
-    await new Promise(r => setTimeout(r, 3000));   // wait 3 s
+    await new Promise(r => setTimeout(r, 3000));
     return api(endpoint, params, retries - 1);
   }
 
