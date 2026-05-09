@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -1328,7 +1328,6 @@ let _screenerLoaded    = false;
 let _screenerData      = [];
 let _screenerFiltered  = [];   // currently filtered+sorted slice
 let _screenerDisplayed = 20;   // how many rows are rendered right now
-let _screenerFmpDone   = false;// true once FMP batch has returned
 let _marketLoaded      = false;
 let _marketPeriod   = '1D';
 let _marketQuotes   = {};
@@ -1358,10 +1357,11 @@ function goPage(name) {
 }
 
 // Handle initial URL hash (e.g. user bookmarked /stockiq#screener)
-(function handleInitialHash() {
+// Deferred with setTimeout so all const declarations are parsed first (avoids TDZ)
+setTimeout(() => {
   const hash = (location.hash || '').replace('#', '');
   if (['compare', 'screener', 'market'].includes(hash)) goPage(hash);
-})();
+}, 0);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PAGE 2 · COMPARE
@@ -1511,39 +1511,114 @@ function renderComparePage(stocks) {
 // PAGE 3 · SCREENER
 // ══════════════════════════════════════════════════════════════════════════════
 
-const SCREENER_TICKERS = [
-  // Mega-cap Tech
-  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','ORCL','CRM',
-  'ADBE','CSCO','AMD','QCOM','TXN','INTC','MU','AMAT','KLAC','LRCX',
+// Hardcoded name/sector for all screener tickers — eliminates need for FMP profile calls
+const SCREENER_META = {
+  // Tech
+  'AAPL':  { name:'Apple',                  sector:'Technology'        },
+  'MSFT':  { name:'Microsoft',              sector:'Technology'        },
+  'NVDA':  { name:'NVIDIA',                 sector:'Technology'        },
+  'AMZN':  { name:'Amazon',                 sector:'Consumer Cyclical' },
+  'GOOGL': { name:'Alphabet',               sector:'Communication'     },
+  'META':  { name:'Meta Platforms',         sector:'Communication'     },
+  'TSLA':  { name:'Tesla',                  sector:'Consumer Cyclical' },
+  'AVGO':  { name:'Broadcom',               sector:'Technology'        },
+  'ORCL':  { name:'Oracle',                 sector:'Technology'        },
+  'CRM':   { name:'Salesforce',             sector:'Technology'        },
+  'ADBE':  { name:'Adobe',                  sector:'Technology'        },
+  'CSCO':  { name:'Cisco',                  sector:'Technology'        },
+  'AMD':   { name:'AMD',                    sector:'Technology'        },
+  'QCOM':  { name:'Qualcomm',               sector:'Technology'        },
+  'TXN':   { name:'Texas Instruments',      sector:'Technology'        },
+  'INTC':  { name:'Intel',                  sector:'Technology'        },
+  'MU':    { name:'Micron Technology',      sector:'Technology'        },
+  'AMAT':  { name:'Applied Materials',      sector:'Technology'        },
+  'KLAC':  { name:'KLA Corporation',        sector:'Technology'        },
+  'LRCX':  { name:'Lam Research',           sector:'Technology'        },
   // Healthcare
-  'LLY','UNH','JNJ','ABBV','MRK','TMO','ABT','AMGN','PFE','MDT',
-  'ISRG','REGN','VRTX','ZTS','EW',
+  'LLY':   { name:'Eli Lilly',              sector:'Healthcare'        },
+  'UNH':   { name:'UnitedHealth',           sector:'Healthcare'        },
+  'JNJ':   { name:'Johnson & Johnson',      sector:'Healthcare'        },
+  'ABBV':  { name:'AbbVie',                 sector:'Healthcare'        },
+  'MRK':   { name:'Merck',                  sector:'Healthcare'        },
+  'TMO':   { name:'Thermo Fisher',          sector:'Healthcare'        },
+  'ABT':   { name:'Abbott Labs',            sector:'Healthcare'        },
+  'AMGN':  { name:'Amgen',                  sector:'Healthcare'        },
+  'PFE':   { name:'Pfizer',                 sector:'Healthcare'        },
+  'ISRG':  { name:'Intuitive Surgical',     sector:'Healthcare'        },
+  'REGN':  { name:'Regeneron',              sector:'Healthcare'        },
+  'VRTX':  { name:'Vertex Pharma',          sector:'Healthcare'        },
   // Financials
-  'JPM','V','MA','BAC','GS','MS','WFC','BLK','SCHW','AXP',
-  'CB','PGR','AON','SPGI','MCO',
+  'JPM':   { name:'JPMorgan Chase',         sector:'Financial'         },
+  'V':     { name:'Visa',                   sector:'Financial'         },
+  'MA':    { name:'Mastercard',             sector:'Financial'         },
+  'BAC':   { name:'Bank of America',        sector:'Financial'         },
+  'GS':    { name:'Goldman Sachs',          sector:'Financial'         },
+  'MS':    { name:'Morgan Stanley',         sector:'Financial'         },
+  'WFC':   { name:'Wells Fargo',            sector:'Financial'         },
+  'BLK':   { name:'BlackRock',              sector:'Financial'         },
+  'SCHW':  { name:'Charles Schwab',         sector:'Financial'         },
+  'AXP':   { name:'American Express',       sector:'Financial'         },
+  'SPGI':  { name:'S&P Global',             sector:'Financial'         },
+  'BX':    { name:'Blackstone',             sector:'Financial'         },
+  'KKR':   { name:'KKR',                    sector:'Financial'         },
   // Consumer
-  'WMT','HD','COST','MCD','SBUX','NKE','TGT','LOW','TJX','BKNG',
-  'ABNB','CMG','YUM','LULU','ORLY',
+  'WMT':   { name:'Walmart',                sector:'Consumer Staples'  },
+  'HD':    { name:'Home Depot',             sector:'Consumer Cyclical' },
+  'COST':  { name:'Costco',                 sector:'Consumer Staples'  },
+  'MCD':   { name:"McDonald's",             sector:'Consumer Cyclical' },
+  'SBUX':  { name:'Starbucks',              sector:'Consumer Cyclical' },
+  'NKE':   { name:'Nike',                   sector:'Consumer Cyclical' },
+  'TGT':   { name:'Target',                 sector:'Consumer Staples'  },
+  'LOW':   { name:"Lowe's",                 sector:'Consumer Cyclical' },
+  'TJX':   { name:'TJX Companies',          sector:'Consumer Cyclical' },
+  'BKNG':  { name:'Booking Holdings',       sector:'Consumer Cyclical' },
+  'ABNB':  { name:'Airbnb',                 sector:'Consumer Cyclical' },
+  'CMG':   { name:'Chipotle',               sector:'Consumer Cyclical' },
+  'LULU':  { name:'Lululemon',              sector:'Consumer Cyclical' },
   // Energy
-  'XOM','CVX','COP','SLB','EOG','PSX','VLO','MPC',
+  'XOM':   { name:'ExxonMobil',             sector:'Energy'            },
+  'CVX':   { name:'Chevron',                sector:'Energy'            },
+  'COP':   { name:'ConocoPhillips',         sector:'Energy'            },
+  'SLB':   { name:'SLB',                    sector:'Energy'            },
+  'EOG':   { name:'EOG Resources',          sector:'Energy'            },
   // Industrials
-  'RTX','CAT','HON','GE','LMT','UPS','ETN','DE','MMM','ITW',
-  // Communication
-  'NFLX','DIS','CMCSA','TMUS','VZ','T',
+  'RTX':   { name:'RTX Corporation',        sector:'Industrials'       },
+  'CAT':   { name:'Caterpillar',            sector:'Industrials'       },
+  'HON':   { name:'Honeywell',              sector:'Industrials'       },
+  'GE':    { name:'GE Aerospace',           sector:'Industrials'       },
+  'LMT':   { name:'Lockheed Martin',        sector:'Industrials'       },
+  'UPS':   { name:'UPS',                    sector:'Industrials'       },
+  'DE':    { name:'Deere & Co',             sector:'Industrials'       },
+  'ETN':   { name:'Eaton',                  sector:'Industrials'       },
+  // Communication / Media
+  'NFLX':  { name:'Netflix',                sector:'Communication'     },
+  'DIS':   { name:'Walt Disney',            sector:'Communication'     },
+  'CMCSA': { name:'Comcast',                sector:'Communication'     },
+  'TMUS':  { name:'T-Mobile',               sector:'Communication'     },
   // Consumer Staples
-  'PG','KO','PEP','WBA','PM','MO','MDLZ','CL',
+  'PG':    { name:'Procter & Gamble',       sector:'Consumer Staples'  },
+  'KO':    { name:'Coca-Cola',              sector:'Consumer Staples'  },
+  'PEP':   { name:'PepsiCo',               sector:'Consumer Staples'  },
+  'PM':    { name:'Philip Morris',          sector:'Consumer Staples'  },
+  'MDLZ':  { name:'Mondelez',               sector:'Consumer Staples'  },
   // Utilities / Real Estate
-  'NEE','DUK','AMT','PLD','EQIX',
+  'NEE':   { name:'NextEra Energy',         sector:'Utilities'         },
+  'AMT':   { name:'American Tower',         sector:'Real Estate'       },
+  'PLD':   { name:'Prologis',               sector:'Real Estate'       },
+  'EQIX':  { name:'Equinix',                sector:'Real Estate'       },
   // Other
-  'ACN','PX','ICE','CME','BX','KKR',
-];
+  'ACN':   { name:'Accenture',              sector:'Technology'        },
+  'ICE':   { name:'Intercontinental Exch.', sector:'Financial'         },
+  'CME':   { name:'CME Group',              sector:'Financial'         },
+};
+
+const SCREENER_TICKERS = Object.keys(SCREENER_META);
 
 async function loadScreener(force = false) {
   if (_screenerLoaded && !force) return;
 
   // Reset state
   _screenerLoaded    = false;
-  _screenerFmpDone   = false;
   _screenerData      = [];
   _screenerFiltered  = [];
   _screenerDisplayed = 20;
@@ -1556,47 +1631,55 @@ async function loadScreener(force = false) {
     </p>
   </div>`;
 
-  // ── Step 1: FMP in batches of 20 (free tier URL length limit) ────────────
-  // Fetches price, change%, marketCap, P/E (quotes) + name, sector (profiles)
-  const FMP_BATCH = 20;
-  const qMap = {}, pMap = {};
+  // ── Step 1: Finnhub quote in batches of 5 — show table as soon as 1st batch done ──
+  // Each batch: /quote (1 call) — price, change%, no separate profile needed (SCREENER_META)
+  const BATCH = 5;
+  let firstBatchDone = false;
 
-  for (let i = 0; i < SCREENER_TICKERS.length; i += FMP_BATCH) {
-    const batch  = SCREENER_TICKERS.slice(i, i + FMP_BATCH);
-    const symStr = batch.join(',');
-    const [fmpQuotes, fmpProfiles] = await Promise.all([
-      safeFmp('/v3/quote/'   + symStr),
-      safeFmp('/v3/profile/' + symStr),
-    ]);
-    (fmpQuotes   || []).forEach(q => qMap[q.symbol] = q);
-    (fmpProfiles || []).forEach(p => pMap[p.symbol] = p);
+  for (let i = 0; i < SCREENER_TICKERS.length; i += BATCH) {
+    const batch = SCREENER_TICKERS.slice(i, i + BATCH);
+    const quotes = await Promise.all(
+      batch.map(ticker => safeApi('/quote', { symbol: ticker }))
+    );
+
+    batch.forEach((ticker, idx) => {
+      const q   = quotes[idx] || {};
+      const meta = SCREENER_META[ticker] || { name: ticker, sector: '' };
+      const existing = _screenerData.find(d => d.ticker === ticker);
+      if (existing) {
+        // Update price data if already in array
+        existing.q = { c: q.c || 0, dp: q.dp || 0, d: q.d || 0 };
+      } else {
+        _screenerData.push({
+          ticker,
+          q: { c: q.c || 0, dp: q.dp || 0, d: q.d || 0 },
+          m: {},
+          p: {
+            name:                 meta.name,
+            finnhubIndustry:      meta.sector,
+            marketCapitalization: 0,   // filled in from metrics below
+          },
+        });
+      }
+    });
+
+    // Show table after first batch
+    if (!firstBatchDone && _screenerData.length > 0) {
+      firstBatchDone   = true;
+      _screenerLoaded  = true;
+      applyScreenerFilters();
+    } else if (firstBatchDone) {
+      applyScreenerFilters(true);
+    }
   }
 
-  // Build initial data with FMP only (ROE/margins will be null initially)
-  _screenerData = SCREENER_TICKERS.map(ticker => {
-    const fq = qMap[ticker] || {};
-    const fp = pMap[ticker] || {};
-    return {
-      ticker,
-      q: { c: fq.price||0, dp: fq.changesPercentage||0, d: fq.change||0 },
-      m: { peBasicExclExtraTTM: fq.pe ?? null },
-      p: {
-        name:                fp.companyName || ticker,
-        finnhubIndustry:     fp.industry    || fp.sector || '',
-        marketCapitalization: fq.marketCap ? fq.marketCap / 1e6 : 0,
-      },
-      _fmpRaw: fq,   // keep for dividend yield calc later
-    };
-  }).filter(d => d.q.c > 0);
+  // Make sure table is visible even if data came in one shot
+  if (!firstBatchDone) {
+    _screenerLoaded = true;
+    applyScreenerFilters();
+  }
 
-  // ── Show table immediately after FMP (Finnhub metrics still loading) ──────
-  _screenerFmpDone = true;
-  _screenerLoaded  = true;
-  applyScreenerFilters();
-
-  // ── Step 2: Finnhub metrics in background — ROE, margins, growth ──────────
-  // Runs concurrently; each completed batch silently updates the table
-  const BATCH = 5;
+  // ── Step 2: Finnhub metrics in background — P/E, ROE, margins, mktcap, growth ──
   for (let i = 0; i < _screenerData.length; i += BATCH) {
     const batch = _screenerData.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(async row => {
@@ -1604,25 +1687,16 @@ async function loadScreener(force = false) {
       return { ticker: row.ticker, m: m?.metric || {} };
     }));
 
-    // Merge Finnhub metrics into existing data rows
     results.forEach(({ ticker, m }) => {
       const row = _screenerData.find(d => d.ticker === ticker);
       if (!row) return;
-      const fq = row._fmpRaw || {};
-      row.m = {
-        ...m,
-        // FMP P/E is more real-time than Finnhub's; keep it if available
-        peBasicExclExtraTTM: fq.pe ?? m.peBasicExclExtraTTM,
-        // Compute dividend yield from FMP lastAnnualDividend if Finnhub doesn't have it
-        dividendYieldIndicatedAnnual:
-          m.dividendYieldIndicatedAnnual ??
-          (fq.lastAnnualDividend && fq.price
-            ? (fq.lastAnnualDividend / fq.price * 100)
-            : null),
-      };
+      row.m = m;
+      // Market cap from Finnhub metric (in millions already)
+      if (m.marketCapitalization) {
+        row.p.marketCapitalization = m.marketCapitalization;
+      }
     });
 
-    // Re-apply filters — keepScroll=true so infinite-scroll position is preserved
     applyScreenerFilters(true);
   }
 }
@@ -1711,14 +1785,12 @@ function renderScreenerTable() {
   const visible = data.slice(0, _screenerDisplayed);
   const hasMore = data.length > _screenerDisplayed;
 
-  // Loading indicator: show while Finnhub metrics still arriving
-  const metricLoading = !_screenerLoaded
-    ? '' // not yet — handled by wrapper spinner
-    : (_screenerData.some(d => d.m.roeTTM == null && d.m.netProfitMarginTTM == null)
-        ? `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-align:right">
-             ⏳ Loading ROE / margins…
-           </div>`
-        : '');
+  // Loading indicator: show while Finnhub metrics still arriving in background
+  const metricLoading = _screenerData.some(d => d.m.roeTTM == null && d.m.netProfitMarginTTM == null)
+    ? `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-align:right">
+         ⏳ Loading metrics…
+       </div>`
+    : '';
 
   const rows = visible.map(d => {
     const mc = (d.p.marketCapitalization || 0) * 1e6;
