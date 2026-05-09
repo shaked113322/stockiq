@@ -6,13 +6,13 @@
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-<meta name="theme-color" content="#161b22"/>
+<meta name="theme-color" content="#060d1a"/>
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; font-src 'self'; object-src 'none'; base-uri 'self';">
 <meta name="referrer" content="no-referrer"/>
-<meta name="description" content="StockIQ — Professional stock fundamental analysis: valuation, scoring, DCF, peers, and live news."/>
-<title>StockIQ — Fundamental Analysis</title>
+<meta name="description" content="StockIQ — Professional stock analysis: valuation, comparison, screening, and market overview."/>
+<title>StockIQ — Professional Stock Analysis</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net"/>
-<link rel="stylesheet" href="style.css?v=1.9"/>
+<link rel="stylesheet" href="style.css?v=2.0"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
   integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
   crossorigin="anonymous"></script>
@@ -21,20 +21,36 @@
 
 <!-- ── NAVIGATION ─────────────────────────────────────────────────────────── -->
 <nav>
-  <div class="logo" onclick="window.location.reload()" title="StockIQ — Home">
+  <div class="logo" onclick="goPage('analysis')" title="StockIQ — Home">
     <div class="logo-icon">📈</div>
     <div class="logo-text">Stock<span>IQ</span></div>
   </div>
-  <div class="search-wrap">
+
+  <!-- Page tabs -->
+  <div class="nav-tabs" role="tablist">
+    <button class="nav-tab active" data-page="analysis" onclick="goPage('analysis')" role="tab" aria-selected="true">
+      <span class="tab-icon">📊</span><span class="tab-label">Analysis</span>
+    </button>
+    <button class="nav-tab" data-page="compare" onclick="goPage('compare')" role="tab">
+      <span class="tab-icon">⇄</span><span class="tab-label">Compare</span>
+    </button>
+    <button class="nav-tab" data-page="screener" onclick="goPage('screener')" role="tab">
+      <span class="tab-icon">🔍</span><span class="tab-label">Screener</span>
+    </button>
+    <button class="nav-tab" data-page="market" onclick="goPage('market')" role="tab">
+      <span class="tab-icon">🌐</span><span class="tab-label">Market</span>
+    </button>
+  </div>
+
+  <!-- Search (shown on Analysis page only) -->
+  <div class="search-wrap" id="navSearch">
     <span class="search-icon">⌕</span>
-    <input id="searchInput" type="text" placeholder="Search ticker or company…" autocomplete="off"/>
+    <input id="searchInput" type="text" placeholder="Ticker or company…" autocomplete="off"/>
     <div id="suggestions"></div>
   </div>
   <button class="nav-btn" id="searchBtn">Analyze</button>
-  <button class="nav-btn secondary" id="watchlistBtn"     style="display:none" onclick="toggleWatchlist(currentData.ticker)">☆ Watchlist</button>
-  <button class="nav-btn secondary" id="compareToggleBtn" style="display:none" onclick="toggleCompare()">⇄ Compare</button>
-  <button class="nav-btn secondary" id="exportBtn"        style="display:none" onclick="window.print()">⬇ Export PDF</button>
-  <button class="nav-btn secondary" id="wlViewBtn"        onclick="showWatchlistPanel()" title="View Watchlist">★ List</button>
+
+  <button class="nav-btn secondary" id="wlViewBtn" onclick="showWatchlistPanel()" title="View Watchlist">★ Watchlist</button>
 </nav>
 
 <!-- ── STICKY MINI PRICE BAR ──────────────────────────────────────────────── -->
@@ -46,16 +62,13 @@
   <button class="sb-btn"  onclick="window.scrollTo({top:0,behavior:'smooth'})">↑ Top</button>
 </div>
 
-<!-- ── COMPARE BAR ────────────────────────────────────────────────────────── -->
-<div id="compareBar">
-  <label>Compare with:</label>
-  <input id="compareInput" placeholder="MSFT, GOOGL…" maxlength="10"/>
-  <button class="nav-btn"           onclick="runCompare()">Compare</button>
-  <button class="nav-btn secondary" onclick="clearCompare()">✕ Clear</button>
-</div>
-
 <!-- ── MAIN ───────────────────────────────────────────────────────────────── -->
 <main>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PAGE 1 · ANALYSIS
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="page-analysis" class="page active">
 
   <!-- LANDING -->
   <div id="landing">
@@ -75,7 +88,7 @@
     <div id="landingRecents" style="margin-top:18px"></div>
   </div>
 
-  <!-- LOADING (skeleton) -->
+  <!-- LOADING -->
   <div id="loading">
     <div class="spinner"></div>
     <p style="color:var(--text2);margin-bottom:20px">Fetching fundamentals…</p>
@@ -114,17 +127,9 @@
 
   <!-- DASHBOARD -->
   <div id="dashboard">
-
-    <!-- Company Header -->
     <div class="company-header" id="companyHeader"></div>
-
-    <!-- Investment Scorecard -->
     <div class="scorecard" id="scorecard"></div>
-
-    <!-- Top Stats -->
     <div class="grid-4" id="topStats" style="margin-bottom:14px"></div>
-
-    <!-- Chart + Analyst -->
     <div class="grid-3" style="margin-bottom:14px">
       <div class="card" style="grid-column:span 2">
         <div class="card-title">52-Week Price Position</div>
@@ -135,8 +140,6 @@
         <div id="recommendContent"></div>
       </div>
     </div>
-
-    <!-- Valuation Deep-Dive -->
     <div class="card" style="margin-bottom:14px">
       <div class="card-title">Valuation Deep-Dive</div>
       <div class="grid-3" style="margin:0">
@@ -154,39 +157,27 @@
         </div>
       </div>
     </div>
-
-    <!-- Health + Profitability + Growth -->
     <div class="grid-3" style="margin-bottom:14px">
       <div class="card"><div class="card-title">Financial Health</div><div id="healthContent"></div></div>
       <div class="card"><div class="card-title">Profitability</div><div id="profitContent"></div></div>
       <div class="card"><div class="card-title">Growth</div><div id="growthContent"></div></div>
     </div>
-
-    <!-- Quality Scores -->
     <div class="grid-2" style="margin-bottom:14px">
       <div class="card"><div class="card-title">Piotroski F-Score</div><div id="piotroskiContent"></div></div>
       <div class="card"><div class="card-title">Earnings Quality</div><div id="earningsQualityContent"></div></div>
     </div>
-
-    <!-- Forward Outlook -->
     <div class="card" style="margin-bottom:14px">
       <div class="card-title">Earnings History &amp; Outlook</div>
       <div id="earningsContent"></div>
     </div>
-
-    <!-- Peer Comparison -->
     <div class="card" style="margin-bottom:14px">
       <div class="card-title">Peer Comparison &amp; Market Context</div>
       <div id="peerContent"><p style="color:var(--text2);font-size:13px">Loading peers…</p></div>
     </div>
-
-    <!-- Insider Sentiment + Sector -->
     <div class="grid-2" style="margin-bottom:14px">
       <div class="card"><div class="card-title">Insider Sentiment</div><div id="insiderContent"></div></div>
       <div class="card"><div class="card-title">Sector &amp; Relative Strength</div><div id="sectorContent"></div></div>
     </div>
-
-    <!-- Financial Statements -->
     <div class="card" style="margin-bottom:14px">
       <div class="card-title">Financial Statements</div>
       <div class="tabs">
@@ -198,43 +189,137 @@
       <div id="balancePanel"  class="fin-panel"></div>
       <div id="cashflowPanel" class="fin-panel"></div>
     </div>
-
-    <!-- Profile + News -->
     <div class="grid-2" style="margin-bottom:14px">
       <div class="card"><div class="card-title">Company Profile &amp; Links</div><div id="profileContent"></div></div>
       <div class="card"><div class="card-title">Latest News</div><div id="newsContent"></div></div>
     </div>
-
-    <!-- Compare Panel -->
     <div id="comparePanel" style="display:none">
       <div class="card-title" style="margin-bottom:12px">⇄ Side-by-Side Comparison</div>
       <div id="compareContent"></div>
     </div>
-
   </div><!-- /dashboard -->
 
-  <!-- MOBILE BOTTOM ACTION BAR -->
-  <div id="bottomBar">
-    <button class="bb-btn" id="bbSearch" onclick="document.getElementById('searchInput').focus();window.scrollTo({top:0,behavior:'smooth'})">
-      <span class="bb-icon">⌕</span><span>Search</span>
-    </button>
-    <button class="bb-btn" id="bbWatchlist" onclick="showWatchlistPanel()">
-      <span class="bb-icon">★</span><span>Watchlist</span>
-    </button>
-    <button class="bb-btn" id="bbCompare"  style="display:none" onclick="toggleCompare()">
-      <span class="bb-icon">⇄</span><span>Compare</span>
-    </button>
-    <button class="bb-btn" id="bbAddWatch" style="display:none" onclick="toggleWatchlist(currentData.ticker)">
-      <span class="bb-icon" id="bbAddWatchIcon">☆</span><span>Watch</span>
-    </button>
-    <button class="bb-btn" id="bbExport"   style="display:none" onclick="window.print()">
-      <span class="bb-icon">⬇</span><span>Export</span>
-    </button>
+</div><!-- /page-analysis -->
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PAGE 2 · COMPARE
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="page-compare" class="page">
+  <div class="page-header">
+    <div>
+      <h2 class="page-title">⇄ Stock Comparison</h2>
+      <p class="page-sub">Compare up to 4 stocks side-by-side on every key metric</p>
+    </div>
   </div>
+  <div class="compare-input-row">
+    <input class="compare-ticker-input" id="cmp1" placeholder="AAPL" maxlength="10"/>
+    <input class="compare-ticker-input" id="cmp2" placeholder="MSFT" maxlength="10"/>
+    <input class="compare-ticker-input" id="cmp3" placeholder="GOOGL" maxlength="10"/>
+    <input class="compare-ticker-input" id="cmp4" placeholder="NVDA" maxlength="10"/>
+    <button class="nav-btn" onclick="runComparePage()">Compare</button>
+    <button class="nav-btn secondary" onclick="clearComparePage()">✕ Clear</button>
+  </div>
+  <div id="comparePageResults"></div>
+</div><!-- /page-compare -->
 
-</main>
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PAGE 3 · SCREENER
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="page-screener" class="page">
+  <div class="page-header">
+    <div>
+      <h2 class="page-title">🔍 Stock Screener</h2>
+      <p class="page-sub">Filter and sort <span id="screenerCount">—</span> stocks by fundamentals</p>
+    </div>
+    <button class="nav-btn secondary" id="screenerReloadBtn" onclick="loadScreener(true)">↺ Refresh Data</button>
+  </div>
+  <div class="screener-filters">
+    <select class="screener-select" id="sfSector" onchange="applyScreenerFilters()">
+      <option value="">All Sectors</option>
+      <option value="Technology">Technology</option>
+      <option value="Software">Software</option>
+      <option value="Semiconductors">Semiconductors</option>
+      <option value="Healthcare">Healthcare</option>
+      <option value="Biotechnology">Biotechnology</option>
+      <option value="Pharmaceuticals">Pharmaceuticals</option>
+      <option value="Financials">Financials</option>
+      <option value="Financial Services">Financial Services</option>
+      <option value="Consumer Cyclical">Consumer Cyclical</option>
+      <option value="Consumer Defensive">Consumer Defensive</option>
+      <option value="Energy">Energy</option>
+      <option value="Industrials">Industrials</option>
+      <option value="Communication Services">Communication Services</option>
+      <option value="Real Estate">Real Estate</option>
+      <option value="Utilities">Utilities</option>
+      <option value="Basic Materials">Basic Materials</option>
+    </select>
+    <select class="screener-select" id="sfMcap" onchange="applyScreenerFilters()">
+      <option value="">All Market Caps</option>
+      <option value="mega">Mega Cap (&gt;$200B)</option>
+      <option value="large">Large Cap ($10B–$200B)</option>
+      <option value="mid">Mid Cap ($2B–$10B)</option>
+      <option value="small">Small Cap (&lt;$2B)</option>
+    </select>
+    <select class="screener-select" id="sfPe" onchange="applyScreenerFilters()">
+      <option value="">All P/E</option>
+      <option value="low">Cheap (&lt;15×)</option>
+      <option value="mid">Fair (15–30×)</option>
+      <option value="high">Expensive (&gt;30×)</option>
+      <option value="neg">No Earnings / N/A</option>
+    </select>
+    <select class="screener-select" id="sfChg" onchange="applyScreenerFilters()">
+      <option value="">All Changes</option>
+      <option value="up">Gaining Today</option>
+      <option value="down">Losing Today</option>
+      <option value="up5">Up &gt;5% Today</option>
+      <option value="down5">Down &gt;5% Today</option>
+    </select>
+    <select class="screener-select" id="sfSort" onchange="applyScreenerFilters()">
+      <option value="mcap">Sort: Market Cap ↓</option>
+      <option value="chg">Sort: Change % ↓</option>
+      <option value="chg_asc">Sort: Change % ↑</option>
+      <option value="pe">Sort: P/E ↑ (cheapest)</option>
+      <option value="rev_growth">Sort: Revenue Growth ↓</option>
+      <option value="roe">Sort: ROE ↓</option>
+      <option value="div">Sort: Dividend Yield ↓</option>
+      <option value="price">Sort: Price ↓</option>
+    </select>
+  </div>
+  <div id="screenerTableWrap">
+    <div style="padding:40px;text-align:center;color:var(--text2)">
+      <div class="spinner"></div>
+      <p style="margin-top:14px">Go to the Screener tab to load data</p>
+    </div>
+  </div>
+</div><!-- /page-screener -->
 
-<!-- WATCHLIST PANEL (floating modal) -->
+<!-- ══════════════════════════════════════════════════════════════════════════
+     PAGE 4 · MARKET OVERVIEW
+══════════════════════════════════════════════════════════════════════════ -->
+<div id="page-market" class="page">
+  <div class="page-header">
+    <div>
+      <h2 class="page-title">🌐 Market Overview</h2>
+      <p class="page-sub" id="marketLastUpdated">—</p>
+    </div>
+    <div class="period-tabs">
+      <button class="period-tab active" onclick="setMarketPeriod('1D',this)">Today</button>
+      <button class="period-tab" onclick="setMarketPeriod('1W',this)">Week</button>
+      <button class="period-tab" onclick="setMarketPeriod('1M',this)">Month</button>
+      <button class="period-tab" onclick="setMarketPeriod('1Y',this)">Year</button>
+    </div>
+  </div>
+  <div id="marketContent">
+    <div style="padding:40px;text-align:center;color:var(--text2)">
+      <div class="spinner"></div>
+      <p style="margin-top:14px">Go to the Market tab to load data</p>
+    </div>
+  </div>
+</div><!-- /page-market -->
+
+</main><!-- /main -->
+
+<!-- WATCHLIST PANEL -->
 <div id="watchlistPanel" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:500;align-items:center;justify-content:center;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:340px;max-width:90vw;max-height:80vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -245,7 +330,25 @@
   </div>
 </div>
 
-<!-- ── FRONTEND LOGIC ──────────────────────────────────────────────────────── -->
-<script src="app.js?v=1.9" defer></script>
+<!-- MOBILE BOTTOM TAB BAR -->
+<div id="bottomBar">
+  <button class="bb-btn bb-tab active" data-page="analysis" onclick="goPage('analysis')">
+    <span class="bb-icon">📊</span><span>Analysis</span>
+  </button>
+  <button class="bb-btn bb-tab" data-page="compare" onclick="goPage('compare')">
+    <span class="bb-icon">⇄</span><span>Compare</span>
+  </button>
+  <button class="bb-btn bb-tab" data-page="screener" onclick="goPage('screener')">
+    <span class="bb-icon">🔍</span><span>Screener</span>
+  </button>
+  <button class="bb-btn bb-tab" data-page="market" onclick="goPage('market')">
+    <span class="bb-icon">🌐</span><span>Market</span>
+  </button>
+  <button class="bb-btn" onclick="showWatchlistPanel()">
+    <span class="bb-icon">★</span><span>Watchlist</span>
+  </button>
+</div>
+
+<script src="app.js?v=2.0" defer></script>
 </body>
 </html>

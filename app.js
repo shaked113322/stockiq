@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '1.9';
+const APP_VERSION = '2.0';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -230,6 +230,7 @@ async function analyze(ticker) {
   ticker = ticker.toUpperCase().trim();
   if (!ticker) return;
   _activeTicker = ticker;                         // mark this as the active search
+  goPage('analysis');
   el('searchInput').value = ticker;
   hide('landing'); hide('dashboard'); hide('error');
   el('loading').style.display = 'flex';
@@ -1137,6 +1138,7 @@ function renderNews(newsArr) {
 // ── COMPARE MODE ──────────────────────────────────────────────────────────────
 function toggleCompare() {
   const bar = el('compareBar');
+  if (!bar) { goPage('compare'); return; }   // new multi-page compare
   const isHidden = bar.style.display !== 'flex';
   bar.style.display = isHidden ? 'flex' : 'none';
   if (isHidden) { bar.scrollIntoView({behavior:'smooth',block:'nearest'}); setTimeout(()=>el('compareInput')?.focus(),300); }
@@ -1193,8 +1195,8 @@ async function runCompare() {
 }
 
 function clearCompare() {
-  el('comparePanel').style.display='none';
-  el('compareBar').style.display='none';
+  const panel = el('comparePanel'); if (panel) panel.style.display='none';
+  const bar   = el('compareBar');   if (bar)   bar.style.display='none';
   if (el('compareInput')) el('compareInput').value='';
 }
 
@@ -1273,13 +1275,8 @@ const DEVICE = (() => {
 document.body.classList.add('device-' + DEVICE);
 
 function updateBottomBar(ticker) {
-  if (DEVICE !== 'mobile') return;
-  el('bbCompare').style.display  = ticker ? '' : 'none';
-  el('bbAddWatch').style.display = ticker ? '' : 'none';
-  el('bbExport').style.display   = ticker ? '' : 'none';
-  const inWl = ticker && getWatchlist().includes(ticker);
-  const icon = el('bbAddWatchIcon');
-  if (icon) icon.textContent = inWl ? '★' : '☆';
+  // Bottom bar now has page tabs only — no per-stock buttons needed.
+  // Active tab state is managed by goPage().
 }
 
 // CSS media query handles bottomBar show/hide on resize — no JS needed.
@@ -1298,3 +1295,543 @@ window.addEventListener('resize', () => {
       ${r.map(t=>`<button class="qp-btn" onclick="analyze('${t}')" style="border-color:var(--accent);color:var(--accent)">${t}</button>`).join('')}
     </div>`;
 })();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MULTI-PAGE ROUTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _currentPage    = 'analysis';
+let _screenerLoaded = false;
+let _screenerData   = [];
+let _marketLoaded   = false;
+let _marketPeriod   = '1D';
+let _marketQuotes   = {};
+let _marketEarnData = null;
+
+function goPage(name) {
+  _currentPage = name;
+  // Nav tabs
+  document.querySelectorAll('.nav-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.page === name));
+  // Mobile bottom bar tabs
+  document.querySelectorAll('.bb-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.page === name));
+  // Pages
+  document.querySelectorAll('.page').forEach(p =>
+    p.classList.toggle('active', p.id === 'page-' + name));
+  // Search bar only on analysis
+  const ns = el('navSearch'), sb = el('searchBtn');
+  if (ns) ns.style.display = (name === 'analysis') ? '' : 'none';
+  if (sb) sb.style.display = (name === 'analysis') ? '' : 'none';
+  // Lazy-load pages on first visit
+  if (name === 'screener' && !_screenerLoaded) loadScreener();
+  if (name === 'market'   && !_marketLoaded)   loadMarket();
+  if (name === 'compare')  initComparePage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  history.replaceState(null, '', '#' + name);
+}
+
+// Handle initial URL hash (e.g. user bookmarked /stockiq#screener)
+(function handleInitialHash() {
+  const hash = (location.hash || '').replace('#', '');
+  if (['compare', 'screener', 'market'].includes(hash)) goPage(hash);
+})();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PAGE 2 · COMPARE
+// ══════════════════════════════════════════════════════════════════════════════
+
+function initComparePage() {
+  // Pre-fill first slot from currently analyzed stock
+  const inp = el('cmp1');
+  if (inp && !inp.value && currentData.ticker) inp.value = currentData.ticker;
+}
+
+async function runComparePage() {
+  const tickers = ['cmp1','cmp2','cmp3','cmp4']
+    .map(id => el(id)?.value.trim().toUpperCase())
+    .filter(Boolean);
+  if (tickers.length < 2) { toast('Enter at least 2 tickers to compare', 'warn'); return; }
+
+  const out = el('comparePageResults');
+  out.innerHTML = `<div style="padding:40px;text-align:center"><div class="spinner"></div>
+    <p style="color:var(--text2);margin-top:14px">Loading ${tickers.length} stocks…</p></div>`;
+
+  try {
+    const stocks = await Promise.all(tickers.map(async ticker => {
+      const [profile, quote, metrics] = await Promise.all([
+        safeApi('/stock/profile2',  { symbol: ticker }),
+        safeApi('/quote',           { symbol: ticker }),
+        safeApi('/stock/metric',    { symbol: ticker, metric: 'all' }),
+      ]);
+      return {
+        ticker,
+        profile: profile || {},
+        quote:   quote   || {},
+        m:       metrics?.metric || {},
+      };
+    }));
+    renderComparePage(stocks);
+  } catch {
+    out.innerHTML = '<p style="color:var(--red);padding:24px">Failed to load data. Please try again.</p>';
+  }
+}
+
+function clearComparePage() {
+  ['cmp1','cmp2','cmp3','cmp4'].forEach(id => { if (el(id)) el(id).value = ''; });
+  el('comparePageResults').innerHTML = '';
+}
+
+function renderComparePage(stocks) {
+  const colors = ['var(--accent)','var(--purple)','var(--green)','var(--yellow)'];
+
+  // Helper: highlight best value in a row
+  function best(vals, higherBetter = true) {
+    const nums = vals.map(v => parseFloat(v));
+    if (nums.every(isNaN)) return vals.map(() => false);
+    const valid = nums.filter(n => !isNaN(n) && isFinite(n));
+    if (!valid.length) return vals.map(() => false);
+    const target = higherBetter ? Math.max(...valid) : Math.min(...valid.filter(n => n > 0));
+    return nums.map(n => n === target);
+  }
+
+  const sections = [
+    { title: '💰 Price & Market', rows: [
+      ['Price',           s => '$' + fmtNum(s.quote.c),                          false],
+      ['Change Today',    s => `<span style="${clr(s.quote.dp)}">${s.quote.dp!=null?(s.quote.dp>0?'+':'')+fmtPct(s.quote.dp):'—'}</span>`, true],
+      ['Market Cap',      s => fmtM((s.profile.marketCapitalization||0)*1e6),    false],
+      ['52W High',        s => '$' + fmtNum(s.m['52WeekHigh']),                  false],
+      ['52W Low',         s => '$' + fmtNum(s.m['52WeekLow']),                   false],
+      ['Beta',            s => fmtNum(s.m.beta, 2),                              false],
+    ]},
+    { title: '📊 Valuation', rows: [
+      ['P/E (TTM)',        s => fmtNum(s.m.peBasicExclExtraTTM, 1),              false],
+      ['P/E Normalized',  s => fmtNum(s.m.peNormalizedAnnual, 1),               false],
+      ['P/S (TTM)',        s => fmtNum(s.m.psTTM, 2),                            false],
+      ['P/B',             s => fmtNum(s.m.pbAnnual, 2),                          false],
+      ['EPS (Annual)',     s => '$' + fmtNum(s.m.epsBasicExclExtraItemsAnnual, 2), true],
+    ]},
+    { title: '📈 Profitability', rows: [
+      ['Gross Margin',    s => fmtPct(s.m.grossMarginTTM),                       true],
+      ['Net Margin',      s => fmtPct(s.m.netProfitMarginTTM),                   true],
+      ['Op. Margin',      s => fmtPct(s.m.operatingMarginTTM),                   true],
+      ['ROE (TTM)',        s => fmtPct(s.m.roeTTM),                              true],
+      ['ROA (TTM)',        s => fmtPct(s.m.roaTTM),                              true],
+    ]},
+    { title: '🚀 Growth', rows: [
+      ['Revenue Growth (TTM YoY)', s => fmtPct(s.m.revenueGrowthTTMYoy),        true],
+      ['EPS Growth (TTM YoY)',     s => fmtPct(s.m.epsGrowthTTMYoy),            true],
+      ['Revenue Growth 5Y',        s => fmtPct(s.m.revenueGrowth5Y),            true],
+      ['EPS Growth 5Y',            s => fmtPct(s.m.epsGrowth5Y),                true],
+    ]},
+    { title: '🏦 Financial Health', rows: [
+      ['Current Ratio',    s => fmtNum(s.m.currentRatioAnnual, 2),               true],
+      ['Quick Ratio',      s => fmtNum(s.m.quickRatioAnnual, 2),                 true],
+      ['Debt/Equity',      s => fmtNum(s.m['totalDebt/totalEquityAnnual'], 2),   false],
+      ['Interest Coverage',s => fmtNum(s.m.netInterestCoverageAnnual, 2),        true],
+    ]},
+    { title: '💵 Dividends', rows: [
+      ['Dividend Yield',   s => fmtPct(s.m.dividendYieldIndicatedAnnual),        true],
+      ['Payout Ratio',     s => fmtPct(s.m.payoutRatioAnnual),                   false],
+    ]},
+  ];
+
+  const headerRow = `<tr>
+    <th style="text-align:left;padding:10px 12px;font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Metric</th>
+    ${stocks.map((s,i) => `
+      <th style="text-align:right;padding:10px 12px;color:${colors[i]}">
+        ${esc(s.ticker)}<br>
+        <small style="font-weight:400;color:var(--text2);font-size:11px">${esc(s.profile.name||'')}</small>
+      </th>`).join('')}
+  </tr>`;
+
+  const bodyRows = sections.map(sec => {
+    const secRow = `<tr><td colspan="${stocks.length+1}"
+      style="background:rgba(72,149,239,.06);font-weight:700;font-size:11px;color:var(--text2);
+             text-transform:uppercase;letter-spacing:.5px;padding:8px 12px">
+      ${sec.title}
+    </td></tr>`;
+
+    const dataRows = sec.rows.map(([label, fn, higherBetter]) => {
+      const rawVals = stocks.map(s => fn(s));
+      // Strip HTML for best-detection
+      const plainVals = rawVals.map(v => v.replace(/<[^>]*>/g,''));
+      const isBest = best(plainVals, higherBetter);
+      const cells = stocks.map((s,i) => {
+        const bg = isBest[i] ? 'background:rgba(0,201,87,.08);' : '';
+        return `<td style="text-align:right;padding:8px 12px;font-weight:600;${bg}color:${colors[i]}">${rawVals[i]}</td>`;
+      }).join('');
+      return `<tr><td style="padding:8px 12px;color:var(--text2);font-size:13px">${label}</td>${cells}</tr>`;
+    }).join('');
+
+    return secRow + dataRows;
+  }).join('');
+
+  el('comparePageResults').innerHTML = `
+    <div class="card" style="margin-top:14px;padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead style="border-bottom:1px solid var(--border)">${headerRow}</thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <p style="font-size:11px;color:var(--text2);margin-top:10px;text-align:center">
+      🟩 Green background = best value in that row. Data from Finnhub — for research only, not investment advice.
+    </p>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PAGE 3 · SCREENER
+// ══════════════════════════════════════════════════════════════════════════════
+
+const SCREENER_TICKERS = [
+  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','LLY','JPM',
+  'V','MA','UNH','XOM','WMT','PG','JNJ','HD','COST','KO','BAC',
+  'ORCL','MRK','PEP','ABBV','CSCO','CRM','NFLX','AMD','MCD','ABT',
+  'ACN','TMO','CVX','ADBE','DIS','GS','TXN','QCOM','RTX',
+];
+
+async function loadScreener(force = false) {
+  if (_screenerLoaded && !force) return;
+  _screenerLoaded = false;
+  _screenerData   = [];
+
+  const wrap = el('screenerTableWrap');
+  wrap.innerHTML = `<div style="padding:40px;text-align:center">
+    <div class="spinner"></div>
+    <p id="screenerProgress" style="color:var(--text2);margin-top:14px">
+      Loading <strong>0 / ${SCREENER_TICKERS.length}</strong> stocks…
+    </p></div>`;
+
+  const BATCH = 5;
+  for (let i = 0; i < SCREENER_TICKERS.length; i += BATCH) {
+    const batch = SCREENER_TICKERS.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async ticker => {
+      try {
+        const [q, m, p] = await Promise.all([
+          safeApi('/quote',            { symbol: ticker }),
+          safeApi('/stock/metric',     { symbol: ticker, metric: 'all' }),
+          safeApi('/stock/profile2',   { symbol: ticker }),
+        ]);
+        return { ticker, q: q||{}, m: m?.metric||{}, p: p||{} };
+      } catch { return null; }
+    }));
+    _screenerData.push(...results.filter(Boolean));
+    const prog = el('screenerProgress');
+    if (prog) prog.innerHTML = `Loading <strong>${Math.min(i+BATCH, SCREENER_TICKERS.length)} / ${SCREENER_TICKERS.length}</strong> stocks…`;
+  }
+
+  _screenerLoaded = true;
+  applyScreenerFilters();
+}
+
+function applyScreenerFilters() {
+  if (!_screenerLoaded) return;
+
+  const sector = el('sfSector')?.value || '';
+  const mcap   = el('sfMcap')?.value   || '';
+  const pe     = el('sfPe')?.value     || '';
+  const chg    = el('sfChg')?.value    || '';
+  const sort   = el('sfSort')?.value   || 'mcap';
+
+  let data = [..._screenerData];
+
+  if (sector) data = data.filter(d =>
+    (d.p.finnhubIndustry||'').toLowerCase().includes(sector.toLowerCase()) ||
+    (d.p.ggroup||'').toLowerCase().includes(sector.toLowerCase()));
+
+  if (mcap) data = data.filter(d => {
+    const mc = (d.p.marketCapitalization||0) * 1e6;
+    if (mcap === 'mega')  return mc >= 200e9;
+    if (mcap === 'large') return mc >= 10e9  && mc < 200e9;
+    if (mcap === 'mid')   return mc >= 2e9   && mc < 10e9;
+    if (mcap === 'small') return mc < 2e9;
+    return true;
+  });
+
+  if (pe) data = data.filter(d => {
+    const p = d.m.peBasicExclExtraTTM;
+    if (pe === 'low')  return p != null && p > 0  && p < 15;
+    if (pe === 'mid')  return p != null && p >= 15 && p <= 30;
+    if (pe === 'high') return p != null && p > 30;
+    if (pe === 'neg')  return p == null || p <= 0;
+    return true;
+  });
+
+  if (chg) data = data.filter(d => {
+    const dp = d.q.dp || 0;
+    if (chg === 'up')    return dp > 0;
+    if (chg === 'down')  return dp < 0;
+    if (chg === 'up5')   return dp >= 5;
+    if (chg === 'down5') return dp <= -5;
+    return true;
+  });
+
+  const sortFns = {
+    mcap:       (a,b) => (b.p.marketCapitalization||0) - (a.p.marketCapitalization||0),
+    chg:        (a,b) => (b.q.dp||0) - (a.q.dp||0),
+    chg_asc:    (a,b) => (a.q.dp||0) - (b.q.dp||0),
+    pe:         (a,b) => {
+      const pa = a.m.peBasicExclExtraTTM, pb = b.m.peBasicExclExtraTTM;
+      if (!pa || pa <= 0) return  1;
+      if (!pb || pb <= 0) return -1;
+      return pa - pb;
+    },
+    rev_growth: (a,b) => (b.m.revenueGrowthTTMYoy||0) - (a.m.revenueGrowthTTMYoy||0),
+    roe:        (a,b) => (b.m.roeTTM||0) - (a.m.roeTTM||0),
+    div:        (a,b) => (b.m.dividendYieldIndicatedAnnual||0) - (a.m.dividendYieldIndicatedAnnual||0),
+    price:      (a,b) => (b.q.c||0) - (a.q.c||0),
+  };
+  data.sort(sortFns[sort] || sortFns.mcap);
+
+  if (el('screenerCount')) el('screenerCount').textContent = data.length;
+  renderScreenerTable(data);
+}
+
+function renderScreenerTable(data) {
+  const wrap = el('screenerTableWrap');
+
+  if (!data.length) {
+    wrap.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">No stocks match your filters.</div>';
+    return;
+  }
+
+  const chgCell = v => v == null
+    ? '—'
+    : `<span style="${clr(v)}">${v > 0 ? '+' : ''}${fmtPct(v)}</span>`;
+
+  const rows = data.map(d => {
+    const mc = (d.p.marketCapitalization||0) * 1e6;
+    return `<tr onclick="goPage('analysis');analyze('${esc(d.ticker)}')" style="cursor:pointer">
+      <td>
+        <strong style="color:var(--accent)">${esc(d.ticker)}</strong><br>
+        <small style="color:var(--text2);font-size:11px">${esc(d.p.name||'')}</small>
+      </td>
+      <td style="font-size:11px;color:var(--text2)">${esc(d.p.finnhubIndustry||'—')}</td>
+      <td>$${fmtNum(d.q.c)}</td>
+      <td>${chgCell(d.q.dp)}</td>
+      <td>${fmtM(mc)}</td>
+      <td>${fmtNum(d.m.peBasicExclExtraTTM, 1)}</td>
+      <td>${fmtPct(d.m.revenueGrowthTTMYoy)}</td>
+      <td>${fmtPct(d.m.netProfitMarginTTM)}</td>
+      <td>${fmtPct(d.m.roeTTM)}</td>
+      <td>${d.m.dividendYieldIndicatedAnnual ? fmtPct(d.m.dividendYieldIndicatedAnnual) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="screener-table-wrap">
+      <table class="screener-table">
+        <thead><tr>
+          <th style="text-align:left">Stock</th>
+          <th style="text-align:left">Sector</th>
+          <th>Price</th>
+          <th>Chg %</th>
+          <th>Mkt Cap</th>
+          <th>P/E</th>
+          <th>Rev Growth</th>
+          <th>Net Margin</th>
+          <th>ROE</th>
+          <th>Div Yield</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p style="font-size:11px;color:var(--text2);padding:8px 4px;text-align:center">
+      Click any row to open full analysis · Data from Finnhub · For research only
+    </p>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PAGE 4 · MARKET OVERVIEW
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MKT_INDICES = [
+  { sym:'SPY',  name:'S&P 500'      },
+  { sym:'QQQ',  name:'NASDAQ 100'   },
+  { sym:'DIA',  name:'Dow Jones'    },
+  { sym:'IWM',  name:'Russell 2000' },
+];
+const MKT_SECTORS = [
+  { sym:'XLK',  name:'Technology'        },
+  { sym:'XLV',  name:'Healthcare'        },
+  { sym:'XLF',  name:'Financials'        },
+  { sym:'XLY',  name:'Cons. Cyclical'    },
+  { sym:'XLP',  name:'Cons. Defensive'   },
+  { sym:'XLE',  name:'Energy'            },
+  { sym:'XLI',  name:'Industrials'       },
+  { sym:'XLC',  name:'Comm. Services'    },
+  { sym:'XLRE', name:'Real Estate'       },
+  { sym:'XLU',  name:'Utilities'         },
+  { sym:'XLB',  name:'Materials'         },
+];
+const MKT_MOVERS = [
+  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO',
+  'JPM','V','MA','UNH','XOM','LLY','WMT',
+];
+
+async function loadMarket() {
+  _marketLoaded = false;
+  _marketQuotes = {};
+  const content = el('marketContent');
+  content.innerHTML = `<div style="padding:40px;text-align:center">
+    <div class="spinner"></div>
+    <p style="color:var(--text2);margin-top:14px">Loading market data…</p>
+  </div>`;
+
+  const allSyms = [
+    ...MKT_INDICES.map(x => x.sym),
+    ...MKT_SECTORS.map(x => x.sym),
+    ...MKT_MOVERS,
+  ];
+
+  // Fetch all quotes in parallel
+  await Promise.all([...new Set(allSyms)].map(async sym => {
+    const q = await safeApi('/quote', { symbol: sym });
+    if (q) _marketQuotes[sym] = q;
+  }));
+
+  // Fetch upcoming earnings (next 7 days)
+  const fromDate = today();
+  const toDate   = daysAgo(-7);   // negative = future
+  _marketEarnData = await safeApi('/stock/earnings-calendar', { from: fromDate, to: toDate });
+
+  _marketLoaded = true;
+  if (el('marketLastUpdated')) {
+    el('marketLastUpdated').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  }
+  renderMarket();
+}
+
+function setMarketPeriod(period, btn) {
+  _marketPeriod = period;
+  document.querySelectorAll('.period-tab').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (_marketLoaded) renderMarket();
+}
+
+function renderMarket() {
+  const content = el('marketContent');
+  if (!_marketLoaded) return;
+
+  // ── Index cards ──────────────────────────────────────────────────────────
+  const indexCards = MKT_INDICES.map(idx => {
+    const q   = _marketQuotes[idx.sym];
+    const chg = q?.dp;
+    const dir = (chg || 0) >= 0;
+    const cc  = chg == null ? '' : (dir ? 'var(--green)' : 'var(--red)');
+    return `<div class="index-card" onclick="goPage('analysis');analyze('${idx.sym}')">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:4px">${esc(idx.name)}</div>
+      <div style="font-size:20px;font-weight:700;margin-bottom:2px">$${fmtNum(q?.c)}</div>
+      <div style="font-size:13px;font-weight:600;color:${cc}">
+        ${chg != null ? (dir?'+':'')+fmtPct(chg) : '—'}
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Sector heatmap ───────────────────────────────────────────────────────
+  const sectorTiles = MKT_SECTORS.map(sec => {
+    const q   = _marketQuotes[sec.sym];
+    const chg = q?.dp;
+    const dir = (chg || 0) >= 0;
+    const sat = Math.min(Math.abs(chg || 0) / 3, 1);   // 0–1, saturates at ±3%
+    const bg  = chg == null
+      ? 'var(--surface)'
+      : dir
+        ? `rgba(0,201,87,${0.1 + sat * 0.35})`
+        : `rgba(239,68,68,${0.1 + sat * 0.35})`;
+    const tc  = chg == null ? 'var(--text2)' : (dir ? 'var(--green)' : 'var(--red)');
+    return `<div class="sector-tile" style="background:${bg}" onclick="goPage('analysis');analyze('${sec.sym}')">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px">${esc(sec.name)}</div>
+      <div style="font-size:14px;font-weight:700;color:${tc}">
+        ${chg != null ? (dir?'+':'')+fmtPct(chg) : '—'}
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Movers ───────────────────────────────────────────────────────────────
+  const moversSorted = MKT_MOVERS
+    .map(sym => ({ sym, q: _marketQuotes[sym] }))
+    .filter(x => x.q && x.q.dp != null)
+    .sort((a,b) => Math.abs(b.q.dp) - Math.abs(a.q.dp));
+
+  const gainers = moversSorted.filter(x => x.q.dp >  0).slice(0, 5);
+  const losers  = moversSorted.filter(x => x.q.dp <= 0).slice(0, 5);
+
+  const moverRows = (list, isGain) => list.length
+    ? list.map(x => `
+        <div onclick="goPage('analysis');analyze('${esc(x.sym)}')"
+          style="display:flex;justify-content:space-between;align-items:center;
+                 padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">
+          <span style="font-weight:700;color:var(--accent)">${esc(x.sym)}</span>
+          <span style="font-size:12px;color:var(--text2)">$${fmtNum(x.q.c)}</span>
+          <span style="font-weight:600;color:${isGain?'var(--green)':'var(--red)'}">${isGain?'+':''}${fmtPct(x.q.dp)}</span>
+        </div>`).join('')
+    : `<p style="color:var(--text2);font-size:13px;padding:12px 0">No data</p>`;
+
+  // ── Upcoming earnings ────────────────────────────────────────────────────
+  let earningsHtml = '';
+  const earnList = _marketEarnData?.earningsCalendar || [];
+  const upcoming = earnList
+    .filter(e => e.symbol && e.date)
+    .sort((a,b) => a.date.localeCompare(b.date))
+    .slice(0, 15);
+
+  if (upcoming.length) {
+    earningsHtml = `
+      <div class="card" style="margin-top:14px">
+        <div class="card-title">📅 Upcoming Earnings (Next 7 Days)</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr>
+              <th style="text-align:left;padding:8px 10px;color:var(--text2);font-weight:600">Ticker</th>
+              <th style="text-align:left;padding:8px 10px;color:var(--text2);font-weight:600">Date</th>
+              <th style="text-align:left;padding:8px 10px;color:var(--text2);font-weight:600">Time</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text2);font-weight:600">EPS Est.</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text2);font-weight:600">Rev Est.</th>
+            </tr></thead>
+            <tbody>
+              ${upcoming.map(e => `
+                <tr onclick="goPage('analysis');analyze('${esc(e.symbol)}')" style="cursor:pointer">
+                  <td style="padding:8px 10px;font-weight:700;color:var(--accent)">${esc(e.symbol)}</td>
+                  <td style="padding:8px 10px;color:var(--text2)">${esc(e.date||'')}</td>
+                  <td style="padding:8px 10px;color:var(--text2);font-size:11px">${esc(e.hour==='bmo'?'Pre-market':e.hour==='amc'?'After-close':'During market')}</td>
+                  <td style="padding:8px 10px;text-align:right">${e.epsEstimate!=null ? '$'+fmtNum(e.epsEstimate,2) : '—'}</td>
+                  <td style="padding:8px 10px;text-align:right">${e.revenueEstimate!=null ? fmtM(e.revenueEstimate) : '—'}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  content.innerHTML = `
+    <div class="index-grid">${indexCards}</div>
+
+    <div class="grid-2" style="margin-top:14px">
+      <div class="card">
+        <div class="card-title">🌡 Sector Performance (Today)</div>
+        <div class="sector-heatmap" style="margin-top:10px">${sectorTiles}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">⚡ Market Movers</div>
+        <div class="grid-2" style="margin:10px 0 0">
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:6px">▲ Top Gainers</div>
+            ${moverRows(gainers, true)}
+          </div>
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:6px">▼ Top Losers</div>
+            ${moverRows(losers, false)}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    ${earningsHtml}
+
+    <p style="font-size:11px;color:var(--text2);margin-top:12px;text-align:center">
+      Click any card to open full analysis · Data from Finnhub · For research only
+    </p>`;
+}
