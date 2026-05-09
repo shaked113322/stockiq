@@ -602,7 +602,7 @@ function renderValuation(m) {
     ['Forward P/E',     fmtNum(m.peNormalizedAnnual, 1),  'P/E based on next-year earnings estimates. Lower than TTM P/E = expected growth.'],
     ['PEG Ratio',       fmtNum(m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM/m.epsGrowthTTMYoy : null, 2), 'P/E ÷ EPS Growth rate. PEG < 1 often signals undervaluation. Popularised by Peter Lynch.'],
     ['P/B Ratio',       fmtNum(m.pbAnnual, 2),             'Price ÷ Book Value. Below 1 may mean assets exceed market cap; high P/B common in tech.'],
-    ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2),                'Price ÷ Revenue per share. Useful for unprofitable growth companies where P/E doesn't apply.'],
+    ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2),                'Price ÷ Revenue per share. Useful for unprofitable growth companies where P/E does not apply.'],
     ['P/CF (TTM)',      fmtNum(m.pcfShareTTM, 2),          'Price ÷ Cash Flow per share. Cash flow is harder to manipulate than earnings — a quality check.'],
     ['EV/EBITDA',       fmtNum(m.evEbitdaTTM, 1),          'Enterprise Value ÷ EBITDA. Below 10 is generally cheap; used for acquisitions and comparisons across capital structures.'],
     ['EV/Revenue',      fmtNum(m.evRevenueTTM, 2),         'Enterprise Value ÷ Revenue. Useful when EBITDA is negative; common in SaaS / high-growth companies.'],
