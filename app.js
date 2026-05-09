@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '1.8';
+const APP_VERSION = '1.9';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -470,6 +470,9 @@ function renderScorecard(scores, m, quote) {
     </div>
     <div class="scorecard-signals">
       ${scores.signals.map(s => `<span class="signal-chip ${s.cls}">${s.text}</span>`).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--text2);border-top:1px solid var(--border);padding-top:8px;margin-top:6px">
+      ⚠ Data sourced from Finnhub. For research only — not financial advice. Verify all metrics before making investment decisions.
     </div>`;
 
   // Kick off ring + counter animations after the DOM is painted
@@ -537,7 +540,7 @@ function renderTopStats(quote, metrics, profile) {
   const stats = [
     { label:'Market Cap',      value: mc ? fmtM(mc*1e6) : '—', sub:'' },
     { label:'P/E Ratio',       value: fmtNum(m.peBasicExclExtraTTM, 1), sub:'TTM' },
-    { label:'EPS (TTM)',       value: m.epsBasicExclExtraItemsAnnual ? '$'+fmtNum(m.epsBasicExclExtraItemsAnnual) : '—', sub:'Annual' },
+    { label:'EPS (Annual)',     value: m.epsBasicExclExtraItemsAnnual ? '$'+fmtNum(m.epsBasicExclExtraItemsAnnual) : '—', sub:'Annual' },
     { label:'52W High',        value: '$'+fmtNum(m['52WeekHigh']), sub: fmtPct(((quote.c/m['52WeekHigh'])-1)*100)+' from high' },
     { label:'52W Low',         value: '$'+fmtNum(m['52WeekLow']),  sub: fmtPct(((quote.c/m['52WeekLow'])-1)*100)+' above low' },
     { label:'Beta',            value: fmtNum(m.beta, 2), sub:'Vs S&P 500' },
@@ -602,7 +605,7 @@ function renderValuation(m) {
   el('valuationContent').innerHTML = metricRowsTipped([
     ['P/E (TTM)',        fmtNum(m.peBasicExclExtraTTM, 1), 'Price ÷ Earnings (trailing 12 months). Below 15 is cheap; above 30 is expensive for most sectors.'],
     ['P/E (Annual)',     fmtNum(m.peExclExtraAnnual, 1),   'Annual P/E excluding one-time items for a cleaner comparison.'],
-    ['Forward P/E',     fmtNum(m.peNormalizedAnnual, 1),  'P/E based on next-year earnings estimates. Lower than TTM P/E = expected growth.'],
+    ['P/E Normalized',  fmtNum(m.peNormalizedAnnual, 1),  'P/E based on normalized (adjusted) annual earnings — smooths out one-time items. NOT a forward P/E; does not use analyst forecasts.'],
     ['PEG Ratio',       fmtNum(m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM/m.epsGrowthTTMYoy : null, 2), 'P/E ÷ EPS Growth rate. PEG < 1 often signals undervaluation. Popularised by Peter Lynch.'],
     ['P/B Ratio',       fmtNum(m.pbAnnual, 2),             'Price ÷ Book Value. Below 1 may mean assets exceed market cap; high P/B common in tech.'],
     ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2),                'Price ÷ Revenue per share. Useful for unprofitable growth companies where P/E does not apply.'],
@@ -749,7 +752,7 @@ function renderGrowth(m) {
 function renderPiotroski(m) {
   const criteria = [
     ['ROA Positive',           m.roaTTM > 0],
-    ['Operating CF Positive',  m.roaTTM > 0 && m.currentRatioAnnual > 0],
+    ['Operating CF Positive',  m.operatingMarginTTM != null ? m.operatingMarginTTM > 0 : null],
     ['ROA Increasing',         m.roaTTM!=null&&m.roa5Y!=null ? m.roaTTM>m.roa5Y : null],
     ['Accruals (FCF Quality)', m.netProfitMarginTTM>0 && m.operatingMarginTTM>m.netProfitMarginTTM],
     ['Leverage Stable',        m['totalDebt/totalEquityAnnual']!=null ? m['totalDebt/totalEquityAnnual']<2 : null],
