@@ -115,7 +115,7 @@ function finnhubFetch(endpoint, params) {
       let body = '';
       res.on('data', chunk => {
         size += chunk.length;
-        if (size > 2 * 1024 * 1024) { req.destroy(); return reject(new Error('Response too large')); }
+        if (size > 8 * 1024 * 1024) { req.destroy(); return reject(new Error('Response too large')); }
         body += chunk;
       });
       res.on('end', () => {
@@ -241,9 +241,10 @@ const ALLOWED_ENDPOINTS = [
   '/stock/earnings', '/stock/insider-sentiment', '/company-news',
   '/stock/peers', '/search', '/stock/financials-reported',
   '/stock/candle', '/stock/price-target', '/stock/earnings-calendar',
+  '/stock/symbol',
 ];
 const ALLOWED_PARAM_KEYS = new Set([
-  'symbol','q','metric','from','to','limit','freq','resolution','count',
+  'symbol','q','metric','from','to','limit','freq','resolution','count','exchange',
 ]);
 
 // ── MAIN SERVER ───────────────────────────────────────────────────

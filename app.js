@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '2.4';
+const APP_VERSION = '2.5';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -1617,14 +1617,16 @@ const SCREENER_TICKERS = Object.keys(SCREENER_META);
 // Small sleep helper for throttling
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Track ongoing metric fetch to prevent duplicate loads
+// Full US stock universe (loaded once from Finnhub /stock/symbol)
+let _screenerAllSymbols  = null;
+let _screenerQuoteRunning  = false;
 let _screenerMetricRunning = false;
 
 async function loadScreener(force = false) {
   if (_screenerLoaded && !force) return;
 
-  // Reset state
   _screenerLoaded          = false;
+  _screenerQuoteRunning    = false;
   _screenerMetricRunning   = false;
   _screenerData            = [];
   _screenerFiltered        = [];
@@ -1633,85 +1635,109 @@ async function loadScreener(force = false) {
   const wrap = el('screenerTableWrap');
   wrap.innerHTML = `<div style="padding:40px;text-align:center">
     <div class="spinner"></div>
-    <p style="color:var(--text2);margin-top:14px">
-      Loading ${SCREENER_TICKERS.length} stocks…
-    </p>
+    <p style="color:var(--text2);margin-top:14px">Loading stock universe…</p>
   </div>`;
 
-  // ── Step 1: Twelve Data batch quote — 1 call for ALL tickers ─────────────
-  // TD free tier handles multi-symbol in one request; zero Finnhub calls here.
-  // Split into 2 TD requests to stay well within URL/response limits.
-  const mid     = Math.ceil(SCREENER_TICKERS.length / 2);
-  const chunk1  = SCREENER_TICKERS.slice(0, mid);
-  const chunk2  = SCREENER_TICKERS.slice(mid);
-
-  const [td1, td2] = await Promise.all([
-    safeTd('/quote', { symbol: chunk1.join(',') }),
-    safeTd('/quote', { symbol: chunk2.join(',') }),
-  ]);
-
-  // Parse TD multi-symbol response: { TICKER: { close, percent_change, ... } }
-  function parseTdResponse(tdData, tickers) {
-    if (!tdData || typeof tdData !== 'object') return {};
-    const isMulti = tickers.length > 1 && tdData[tickers[0]] !== undefined;
-    if (isMulti) return tdData;
-    // Single-symbol fallback
-    if (tickers.length === 1 && tdData.close != null) return { [tickers[0]]: tdData };
-    return {};
+  // ── Step 1: Load full US stock universe from Finnhub (cached after first load) ──
+  if (!_screenerAllSymbols) {
+    const rawSyms = await safeApi('/stock/symbol', { exchange: 'US' });
+    if (rawSyms && Array.isArray(rawSyms)) {
+      // Filter to common stocks; exclude symbols with dots/hyphens (foreign ADRs, warrants)
+      const commons = rawSyms.filter(s =>
+        s.type === 'Common Stock' &&
+        s.symbol &&
+        /^[A-Z]{1,5}$/.test(s.symbol)   // pure uppercase letters only (1–5 chars)
+      );
+      // Build lookup from SCREENER_META
+      const metaSet = new Set(SCREENER_TICKERS);
+      // Priority: SCREENER_META tickers first (curated, best-known)
+      const priority = SCREENER_TICKERS.map(t => ({
+        ticker: t,
+        name:   SCREENER_META[t]?.name   || t,
+        sector: SCREENER_META[t]?.sector || '',
+      }));
+      // Rest: all other common stocks sorted A→Z
+      const rest = commons
+        .filter(s => !metaSet.has(s.symbol))
+        .sort((a, b) => a.symbol.localeCompare(b.symbol))
+        .map(s => ({
+          ticker: s.symbol,
+          name:   s.description || s.symbol,
+          sector: '',
+        }));
+      _screenerAllSymbols = [...priority, ...rest];
+    } else {
+      // Fallback: use hardcoded SCREENER_META only
+      _screenerAllSymbols = SCREENER_TICKERS.map(t => ({
+        ticker: t,
+        name:   SCREENER_META[t]?.name   || t,
+        sector: SCREENER_META[t]?.sector || '',
+      }));
+    }
   }
 
-  const tdMap = {
-    ...parseTdResponse(td1, chunk1),
-    ...parseTdResponse(td2, chunk2),
-  };
+  // ── Step 2: Pre-populate data rows (no prices yet) ────────────────────────
+  _screenerData = _screenerAllSymbols.map(({ ticker, name, sector }) => ({
+    ticker,
+    q: { c: 0, dp: 0, d: 0 },
+    m: {},
+    p: { name, finnhubIndustry: sector, marketCapitalization: 0 },
+    _quoteLoaded:  false,
+    _metricLoaded: false,
+  }));
 
-  // Build data rows from TD quotes + SCREENER_META
-  _screenerData = SCREENER_TICKERS.map(ticker => {
-    const meta = SCREENER_META[ticker] || { name: ticker, sector: '' };
-    const d    = tdMap[ticker];
-    let q = { c: 0, dp: 0, d: 0 };
-    if (d && d.status !== 'error' && d.close != null) {
-      const close = parseFloat(d.close)          || 0;
-      const prev  = parseFloat(d.previous_close) || 0;
-      q = {
-        c:  close,
-        dp: parseFloat(d.percent_change) || (prev ? (close - prev) / prev * 100 : 0),
-        d:  parseFloat(d.change)         || (close - prev),
-      };
-    }
-    return {
-      ticker,
-      q,
-      m:             {},     // filled lazily by loadMetricsForVisible()
-      p: {
-        name:                 meta.name,
-        finnhubIndustry:      meta.sector,
-        marketCapitalization: 0,
-      },
-      _metricLoaded: false,
-    };
-  }).filter(d => d.q.c > 0);
-
-  // ── Show table immediately (price + sector already available) ─────────────
   _screenerLoaded = true;
   applyScreenerFilters();
 
-  // ── Step 2: Load Finnhub metrics for the first visible rows ───────────────
-  loadMetricsForVisible();
+  // ── Step 3: Load quotes for first visible rows, then metrics ─────────────
+  loadQuotesForVisible();
 }
 
-// Loads /stock/metric for any visible rows whose metrics haven't been fetched yet.
-// Called after initial load and each time the user scrolls to more rows.
-// Uses batches of 5 with 600ms between batches → ~50 calls/min max, well under IP limit.
-async function loadMetricsForVisible() {
-  if (_screenerMetricRunning) return;   // already running
-  _screenerMetricRunning = true;
-
+// Fetch Finnhub /quote for every visible row that doesn't have a price yet.
+// Batches of 5 with 400ms between → ~75 calls/min max, under the 80 IP limit.
+async function loadQuotesForVisible() {
+  if (_screenerQuoteRunning) return;
+  _screenerQuoteRunning = true;
   try {
-    const BATCH = 5;
+    const BATCH   = 5;
+    const toLoad  = _screenerFiltered
+      .slice(0, _screenerDisplayed)
+      .filter(d => !d._quoteLoaded);
+
+    for (let i = 0; i < toLoad.length; i += BATCH) {
+      const batch   = toLoad.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(async row => {
+        const q = await safeApi('/quote', { symbol: row.ticker });
+        return { ticker: row.ticker, q: q || {} };
+      }));
+
+      results.forEach(({ ticker, q }) => {
+        const row = _screenerData.find(d => d.ticker === ticker);
+        if (!row) return;
+        row.q            = { c: q.c || 0, dp: q.dp || 0, d: q.d || 0 };
+        row._quoteLoaded = true;
+      });
+
+      applyScreenerFilters(true);
+      if (i + BATCH < toLoad.length) await sleep(400);
+    }
+  } finally {
+    _screenerQuoteRunning = false;
+    // After quotes are in, start filling metrics for the same visible rows
+    loadMetricsForVisible();
+  }
+}
+
+// Fetch Finnhub /stock/metric for visible rows that don't have metrics yet.
+// Batches of 5 with 700ms between → ~43 calls/min, well under the 80 IP limit.
+async function loadMetricsForVisible() {
+  if (_screenerMetricRunning) return;
+  _screenerMetricRunning = true;
+  try {
+    const BATCH  = 5;
     const toLoad = _screenerFiltered
       .slice(0, _screenerDisplayed)
-      .filter(d => !d._metricLoaded);
+      .filter(d => d._quoteLoaded && !d._metricLoaded);
 
     for (let i = 0; i < toLoad.length; i += BATCH) {
       const batch   = toLoad.slice(i, i + BATCH);
@@ -1729,7 +1755,7 @@ async function loadMetricsForVisible() {
       });
 
       applyScreenerFilters(true);
-      if (i + BATCH < toLoad.length) await sleep(600);
+      if (i + BATCH < toLoad.length) await sleep(700);
     }
   } finally {
     _screenerMetricRunning = false;
@@ -1755,6 +1781,7 @@ function applyScreenerFilters(keepScroll = false) {
     (d.p.ggroup||'').toLowerCase().includes(sector.toLowerCase()));
 
   if (mcap) data = data.filter(d => {
+    if (!d._metricLoaded) return true;   // keep until metrics arrive
     const mc = (d.p.marketCapitalization||0) * 1e6;
     if (mcap === 'mega')  return mc >= 200e9;
     if (mcap === 'large') return mc >= 10e9  && mc < 200e9;
@@ -1764,6 +1791,7 @@ function applyScreenerFilters(keepScroll = false) {
   });
 
   if (pe) data = data.filter(d => {
+    if (!d._metricLoaded) return true;   // keep until metrics arrive
     const p = d.m.peBasicExclExtraTTM;
     if (pe === 'low')  return p != null && p > 0  && p < 15;
     if (pe === 'mid')  return p != null && p >= 15 && p <= 30;
@@ -1820,10 +1848,11 @@ function renderScreenerTable() {
   const visible = data.slice(0, _screenerDisplayed);
   const hasMore = data.length > _screenerDisplayed;
 
-  // Loading indicator: show while visible-row metrics are still arriving
-  const metricLoading = visible.some(d => !d._metricLoaded)
+  // Loading indicator: show while quotes or metrics are still arriving for visible rows
+  const stillLoading = visible.some(d => !d._quoteLoaded || !d._metricLoaded);
+  const metricLoading = stillLoading
     ? `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-align:right">
-         ⏳ Loading metrics…
+         ⏳ Loading data…
        </div>`
     : '';
 
@@ -1891,8 +1920,8 @@ window.addEventListener('scroll', () => {
   if (distFromBottom < 300) {
     _screenerDisplayed += 20;
     renderScreenerTable();
-    // Load metrics for the newly revealed rows
-    loadMetricsForVisible();
+    // Load quotes then metrics for newly revealed rows
+    loadQuotesForVisible();
   }
 }, { passive: true });
 
