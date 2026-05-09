@@ -1323,9 +1323,13 @@ window.addEventListener('resize', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _currentPage    = 'analysis';
-let _screenerLoaded = false;
-let _screenerData   = [];
-let _marketLoaded   = false;
+let _screenerLoaded    = false;
+let _screenerData      = [];
+let _screenerFiltered  = [];   // currently filtered+sorted slice
+let _screenerDisplayed = 20;   // how many rows are rendered right now
+let _screenerObserver  = null; // IntersectionObserver for infinite scroll
+let _screenerFmpDone   = false;// true once FMP batch has returned
+let _marketLoaded      = false;
 let _marketPeriod   = '1D';
 let _marketQuotes   = {};
 let _marketEarnData = null;
@@ -1508,90 +1512,124 @@ function renderComparePage(stocks) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 const SCREENER_TICKERS = [
-  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','LLY','JPM',
-  'V','MA','UNH','XOM','WMT','PG','JNJ','HD','COST','KO','BAC',
-  'ORCL','MRK','PEP','ABBV','CSCO','CRM','NFLX','AMD','MCD','ABT',
-  'ACN','TMO','CVX','ADBE','DIS','GS','TXN','QCOM','RTX',
+  // Mega-cap Tech
+  'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','ORCL','CRM',
+  'ADBE','CSCO','AMD','QCOM','TXN','INTC','MU','AMAT','KLAC','LRCX',
+  // Healthcare
+  'LLY','UNH','JNJ','ABBV','MRK','TMO','ABT','AMGN','PFE','MDT',
+  'ISRG','REGN','VRTX','ZTS','EW',
+  // Financials
+  'JPM','V','MA','BAC','GS','MS','WFC','BLK','SCHW','AXP',
+  'CB','PGR','AON','SPGI','MCO',
+  // Consumer
+  'WMT','HD','COST','MCD','SBUX','NKE','TGT','LOW','TJX','BKNG',
+  'ABNB','CMG','YUM','LULU','ORLY',
+  // Energy
+  'XOM','CVX','COP','SLB','EOG','PSX','VLO','MPC',
+  // Industrials
+  'RTX','CAT','HON','GE','LMT','UPS','ETN','DE','MMM','ITW',
+  // Communication
+  'NFLX','DIS','CMCSA','TMUS','VZ','T',
+  // Consumer Staples
+  'PG','KO','PEP','WBA','PM','MO','MDLZ','CL',
+  // Utilities / Real Estate
+  'NEE','DUK','AMT','PLD','EQIX',
+  // Other
+  'ACN','PX','ICE','CME','BX','KKR',
 ];
 
 async function loadScreener(force = false) {
   if (_screenerLoaded && !force) return;
-  _screenerLoaded = false;
-  _screenerData   = [];
+
+  // Reset state
+  _screenerLoaded    = false;
+  _screenerFmpDone   = false;
+  _screenerData      = [];
+  _screenerFiltered  = [];
+  _screenerDisplayed = 20;
+  _screenerObserver?.disconnect();
+  _screenerObserver  = null;
 
   const wrap = el('screenerTableWrap');
-  const setProgress = txt => {
-    wrap.innerHTML = `<div style="padding:40px;text-align:center">
-      <div class="spinner"></div>
-      <p style="color:var(--text2);margin-top:14px">${txt}</p>
-    </div>`;
-  };
-  setProgress('Loading prices &amp; market caps… <small style="color:var(--text2)">(FMP)</small>');
+  wrap.innerHTML = `<div style="padding:40px;text-align:center">
+    <div class="spinner"></div>
+    <p style="color:var(--text2);margin-top:14px">
+      Loading ${SCREENER_TICKERS.length} stocks…
+    </p>
+  </div>`;
 
   const symStr = SCREENER_TICKERS.join(',');
 
-  // ── Step 1: 2 FMP calls instead of 120 Finnhub calls ─────────────────────
+  // ── Step 1: 2 FMP calls — instant price/PE/sector data ───────────────────
   const [fmpQuotes, fmpProfiles] = await Promise.all([
-    safeFmp('/v3/quote/' + symStr),       // price, change%, marketCap, P/E, EPS
-    safeFmp('/v3/profile/' + symStr),     // name, sector, industry
+    safeFmp('/v3/quote/'   + symStr),   // price, change%, marketCap, P/E
+    safeFmp('/v3/profile/' + symStr),   // name, sector, industry
   ]);
 
-  // Build lookup maps
   const qMap = {}, pMap = {};
   (fmpQuotes   || []).forEach(q => qMap[q.symbol] = q);
   (fmpProfiles || []).forEach(p => pMap[p.symbol] = p);
 
-  // ── Step 2: Finnhub metrics in batches — ROE, margins, growth ────────────
-  setProgress('Loading profitability &amp; growth metrics… <small style="color:var(--text2)">(Finnhub)</small>');
-  const BATCH = 5;
-  const mMap  = {};
-  for (let i = 0; i < SCREENER_TICKERS.length; i += BATCH) {
-    const batch   = SCREENER_TICKERS.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(async ticker => {
-      const m = await safeApi('/stock/metric', { symbol: ticker, metric: 'all' });
-      return { ticker, m: m?.metric || {} };
-    }));
-    results.forEach(r => { mMap[r.ticker] = r.m; });
-  }
-
-  // ── Step 3: Assemble unified data ────────────────────────────────────────
+  // Build initial data with FMP only (ROE/margins will be null initially)
   _screenerData = SCREENER_TICKERS.map(ticker => {
     const fq = qMap[ticker] || {};
     const fp = pMap[ticker] || {};
-    const m  = mMap[ticker] || {};
     return {
       ticker,
-      q: {
-        c:  fq.price             || 0,
-        dp: fq.changesPercentage || 0,
-        d:  fq.change            || 0,
-      },
-      m: {
-        // FMP gives us a better real-time P/E; Finnhub fills the rest
-        peBasicExclExtraTTM:          fq.pe ?? m.peBasicExclExtraTTM,
-        revenueGrowthTTMYoy:          m.revenueGrowthTTMYoy,
-        netProfitMarginTTM:           m.netProfitMarginTTM,
-        roeTTM:                       m.roeTTM,
-        dividendYieldIndicatedAnnual: m.dividendYieldIndicatedAnnual ?? (fq.lastAnnualDividend && fq.price ? (fq.lastAnnualDividend / fq.price * 100) : null),
-        // keep full Finnhub metrics available for filtering/sorting
-        ...m,
-        peBasicExclExtraTTM: fq.pe ?? m.peBasicExclExtraTTM,
-      },
+      q: { c: fq.price||0, dp: fq.changesPercentage||0, d: fq.change||0 },
+      m: { peBasicExclExtraTTM: fq.pe ?? null },
       p: {
-        name:                 fp.companyName  || ticker,
-        finnhubIndustry:      fp.industry     || fp.sector || '',
-        // FMP marketCap is in raw dollars; Finnhub metric is in millions → normalise to millions
-        marketCapitalization: fq.marketCap ? fq.marketCap / 1e6 : (m['marketCapitalization'] || 0),
+        name:                fp.companyName || ticker,
+        finnhubIndustry:     fp.industry    || fp.sector || '',
+        marketCapitalization: fq.marketCap ? fq.marketCap / 1e6 : 0,
       },
+      _fmpRaw: fq,   // keep for dividend yield calc later
     };
   }).filter(d => d.q.c > 0);
 
-  _screenerLoaded = true;
+  // ── Show table immediately after FMP (Finnhub metrics still loading) ──────
+  _screenerFmpDone = true;
+  _screenerLoaded  = true;
   applyScreenerFilters();
+
+  // ── Step 2: Finnhub metrics in background — ROE, margins, growth ──────────
+  // Runs concurrently; each completed batch silently updates the table
+  const BATCH = 5;
+  for (let i = 0; i < _screenerData.length; i += BATCH) {
+    const batch = _screenerData.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async row => {
+      const m = await safeApi('/stock/metric', { symbol: row.ticker, metric: 'all' });
+      return { ticker: row.ticker, m: m?.metric || {} };
+    }));
+
+    // Merge Finnhub metrics into existing data rows
+    results.forEach(({ ticker, m }) => {
+      const row = _screenerData.find(d => d.ticker === ticker);
+      if (!row) return;
+      const fq = row._fmpRaw || {};
+      row.m = {
+        ...m,
+        // FMP P/E is more real-time than Finnhub's; keep it if available
+        peBasicExclExtraTTM: fq.pe ?? m.peBasicExclExtraTTM,
+        // Compute dividend yield from FMP lastAnnualDividend if Finnhub doesn't have it
+        dividendYieldIndicatedAnnual:
+          m.dividendYieldIndicatedAnnual ??
+          (fq.lastAnnualDividend && fq.price
+            ? (fq.lastAnnualDividend / fq.price * 100)
+            : null),
+      };
+    });
+
+    // Re-apply filters — keepScroll=true so infinite-scroll position is preserved
+    applyScreenerFilters(true);
+  }
 }
 
-function applyScreenerFilters() {
+function applyScreenerFilters(keepScroll = false) {
   if (!_screenerLoaded) return;
+
+  // Reset scroll position when filters/sort change (not when background metrics arrive)
+  if (!keepScroll) _screenerDisplayed = 20;
 
   const sector = el('sfSector')?.value || '';
   const mcap   = el('sfMcap')?.value   || '';
@@ -1649,14 +1687,17 @@ function applyScreenerFilters() {
   };
   data.sort(sortFns[sort] || sortFns.mcap);
 
+  _screenerFiltered = data;
   if (el('screenerCount')) el('screenerCount').textContent = data.length;
-  renderScreenerTable(data);
+  renderScreenerTable();
 }
 
-function renderScreenerTable(data) {
+function renderScreenerTable() {
+  const data = _screenerFiltered;
   const wrap = el('screenerTableWrap');
 
   if (!data.length) {
+    _screenerObserver?.disconnect();
     wrap.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">No stocks match your filters.</div>';
     return;
   }
@@ -1665,8 +1706,21 @@ function renderScreenerTable(data) {
     ? '—'
     : `<span style="${clr(v)}">${v > 0 ? '+' : ''}${fmtPct(v)}</span>`;
 
-  const rows = data.map(d => {
-    const mc = (d.p.marketCapitalization||0) * 1e6;
+  // Only render up to _screenerDisplayed rows
+  const visible = data.slice(0, _screenerDisplayed);
+  const hasMore = data.length > _screenerDisplayed;
+
+  // Loading indicator: show while Finnhub metrics still arriving
+  const metricLoading = !_screenerLoaded
+    ? '' // not yet — handled by wrapper spinner
+    : (_screenerData.some(d => d.m.roeTTM == null && d.m.netProfitMarginTTM == null)
+        ? `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-align:right">
+             ⏳ Loading ROE / margins…
+           </div>`
+        : '');
+
+  const rows = visible.map(d => {
+    const mc = (d.p.marketCapitalization || 0) * 1e6;
     return `<tr onclick="goPage('analysis');analyze('${esc(d.ticker)}')" style="cursor:pointer">
       <td>
         <strong style="color:var(--accent)">${esc(d.ticker)}</strong><br>
@@ -1684,7 +1738,20 @@ function renderScreenerTable(data) {
     </tr>`;
   }).join('');
 
+  // Sentinel div — IntersectionObserver watches this to trigger more rows
+  const sentinel = hasMore
+    ? `<div id="screenerSentinel"
+          style="height:56px;display:flex;align-items:center;justify-content:center;
+                 color:var(--text2);font-size:13px;gap:8px">
+         <div class="spinner" style="width:18px;height:18px;border-width:2px"></div>
+         Loading more…
+       </div>`
+    : `<p style="text-align:center;padding:12px 4px;color:var(--text2);font-size:11px">
+         ✓ All ${data.length} stocks shown · Click any row to open full analysis
+       </p>`;
+
   wrap.innerHTML = `
+    ${metricLoading}
     <div class="screener-table-wrap">
       <table class="screener-table">
         <thead><tr>
@@ -1702,9 +1769,21 @@ function renderScreenerTable(data) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p style="font-size:11px;color:var(--text2);padding:8px 4px;text-align:center">
-      Click any row to open full analysis · Data from Finnhub · For research only
-    </p>`;
+    ${sentinel}`;
+
+  // ── Wire up IntersectionObserver on the sentinel ──────────────────────────
+  _screenerObserver?.disconnect();
+  if (hasMore) {
+    const sentinelEl = el('screenerSentinel');
+    if (sentinelEl) {
+      _screenerObserver = new IntersectionObserver(entries => {
+        if (!entries[0].isIntersecting) return;
+        _screenerDisplayed += 20;
+        renderScreenerTable();          // re-render with more rows
+      }, { rootMargin: '120px' });      // start loading 120px before sentinel
+      _screenerObserver.observe(sentinelEl);
+    }
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
