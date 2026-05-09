@@ -12,7 +12,7 @@
 <meta name="description" content="StockIQ — Professional stock fundamental analysis: valuation, scoring, DCF, peers, and live news."/>
 <title>StockIQ — Fundamental Analysis</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net"/>
-<link rel="stylesheet" href="style.css?v=1.5"/>
+<link rel="stylesheet" href="style.css?v=1.6"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
   integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
   crossorigin="anonymous"></script>
@@ -21,7 +21,10 @@
 
 <!-- ── NAVIGATION ─────────────────────────────────────────────────────────── -->
 <nav>
-  <div class="logo">Stock<span>IQ</span></div>
+  <div class="logo" onclick="window.location.reload()" title="StockIQ — Home">
+    <div class="logo-icon">📈</div>
+    <div class="logo-text">Stock<span>IQ</span></div>
+  </div>
   <div class="search-wrap">
     <span class="search-icon">⌕</span>
     <input id="searchInput" type="text" placeholder="Search ticker or company…" autocomplete="off"/>
@@ -56,6 +59,7 @@
 
   <!-- LANDING -->
   <div id="landing">
+    <div class="landing-badge">Live Market Data · Fundamental Analysis</div>
     <h1>Fundamental Analysis<br>Powered by Real Data</h1>
     <p>Deep-dive into any stock — valuation, scoring, forecasts, peers, and live news.</p>
     <div class="quick-picks">
@@ -242,6 +246,6 @@
 </div>
 
 <!-- ── FRONTEND LOGIC ──────────────────────────────────────────────────────── -->
-<script src="app.js?v=1.5" defer></script>
+<script src="app.js?v=1.6" defer></script>
 </body>
 </html>

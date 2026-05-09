@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '1.5';
+const APP_VERSION = '1.6';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -45,6 +45,30 @@ const show    = (id) => { const e = document.getElementById(id); if (e) e.style.
 const hide    = (id) => { const e = document.getElementById(id); if (e) e.style.display = 'none'; };
 const el      = (id) => document.getElementById(id);
 const clr     = (v, inv=false) => { if (v==null || isNaN(v)) return ''; return (inv ? v<0 : v>0) ? 'color:var(--green)' : 'color:var(--red)'; };
+
+// ── ANIMATION HELPERS ─────────────────────────────────────────────────────────
+/** Count-up animation: animates innerText of `element` from 0 → `to` */
+function animateCounter(element, to, duration = 900, decimals = 0) {
+  if (!element || to == null || isNaN(to)) return;
+  const start = performance.now();
+  const tick  = (now) => {
+    const p    = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - p, 3);            // ease-out cubic
+    element.textContent = Number(to * ease).toFixed(decimals);
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/** Like metricRows but supports an optional tooltip (third element in each row) */
+function metricRowsTipped(rows) {
+  return rows.map(([l, v, tip]) => {
+    const label = tip
+      ? `<span class="metric-label" data-tip="${tip}">${l}</span>`
+      : `<span class="metric-label">${l}</span>`;
+    return `<div class="metric-row">${label}<span class="metric-value">${v}</span></div>`;
+  }).join('');
+}
 
 const SECTOR_ETFS = {
   'Technology':'XLK','Software':'XLK','Semiconductors':'XLK',
@@ -405,32 +429,67 @@ function calcScores(m, rec, quote, earnings) {
 
 // ── RENDER SCORECARD ──────────────────────────────────────────────────────────
 function renderScorecard(scores, m, quote) {
-  const c = scores.verdict.color;
+  const c    = scores.verdict.color;
+  const r    = 40, cx = 48, cy = 48;
+  const circ = +(2 * Math.PI * r).toFixed(2);   // ≈ 251.33
+  const targetOffset = +(circ * (1 - scores.total / 100)).toFixed(2);
+
   el('scorecard').innerHTML = `
     <div class="scorecard-header">
-      <div class="score-circle" style="border-color:${c}">
-        <span class="score-num" style="color:${c}">${scores.total}</span>
-        <span class="score-label">/ 100</span>
+      <div class="score-ring-container">
+        <svg class="score-svg" width="96" height="96" viewBox="0 0 96 96" aria-hidden="true">
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(30,51,84,.6)" stroke-width="7"/>
+          <circle class="score-arc" cx="${cx}" cy="${cy}" r="${r}" fill="none"
+            stroke="${c}" stroke-width="7" stroke-linecap="round"
+            stroke-dasharray="${circ}" stroke-dashoffset="${circ}"
+            data-target="${targetOffset}"/>
+        </svg>
+        <div class="score-inner">
+          <span class="score-num" id="scorecardNum" style="color:${c}">0</span>
+          <span class="score-label">/ 100</span>
+        </div>
       </div>
       <div class="verdict">
         <div class="verdict-badge" style="background:${c}22;color:${c};border:1px solid ${c}">${scores.verdict.label}</div>
         <div class="verdict-why">
-          ${scores.rg != null ? `Revenue Growth: <b style="${clr(scores.rg)}">${scores.rg>0?'+':''}${fmtPct(scores.rg)}</b> · ` : ''}
-          ${scores.eg != null ? `EPS Growth: <b style="${clr(scores.eg)}">${scores.eg>0?'+':''}${fmtPct(scores.eg)}</b> · ` : ''}
+          ${scores.rg  != null ? `Revenue Growth: <b style="${clr(scores.rg)}">${scores.rg>0?'+':''}${fmtPct(scores.rg)}</b> · ` : ''}
+          ${scores.eg  != null ? `EPS Growth: <b style="${clr(scores.eg)}">${scores.eg>0?'+':''}${fmtPct(scores.eg)}</b> · ` : ''}
           ${scores.peg != null ? `PEG: <b>${fmtNum(scores.peg,2)}</b> · ` : ''}
-          ${scores.gn != null ? `Graham: <b>$${fmtNum(scores.gn)}</b>` : ''}
-          ${scores.techFund ? '<br>Technical & Fundamental signals aligned ✓' : ''}
+          ${scores.gn  != null ? `Graham: <b>$${fmtNum(scores.gn)}</b>` : ''}
+          ${scores.techFund ? '<br>Technical &amp; Fundamental signals aligned ✓' : ''}
         </div>
       </div>
       <div style="text-align:right;font-size:12px;color:var(--text2)">
         ${scores.techFund ? '<div style="color:var(--green);font-weight:600;margin-bottom:4px">✓ Tech + Fundamentals Aligned</div>' : ''}
         <div>Score breakdown:</div>
-        <div>Valuation · Growth · Health · Analyst · Momentum</div>
+        <div style="margin-top:3px">Valuation · Growth · Health<br>Analyst · Momentum · Quality</div>
       </div>
     </div>
     <div class="scorecard-signals">
       ${scores.signals.map(s => `<span class="signal-chip ${s.cls}">${s.text}</span>`).join('')}
     </div>`;
+
+  // Kick off ring + counter animations after the DOM is painted
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    // Animate the SVG arc stroke
+    const arc = el('scorecard')?.querySelector('.score-arc');
+    if (arc) arc.style.strokeDashoffset = arc.dataset.target;
+
+    // Animate the numeric counter
+    const numEl = el('scorecardNum');
+    if (numEl) {
+      const target = scores.total;
+      const dur    = 1300;
+      const t0     = performance.now();
+      const tick   = (now) => {
+        const p    = Math.min((now - t0) / dur, 1);
+        const ease = 1 - Math.pow(1 - p, 3);
+        numEl.textContent = Math.round(ease * target);
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+  }));
 }
 
 // ── RENDER HEADER ─────────────────────────────────────────────────────────────
@@ -451,10 +510,21 @@ function renderHeader(profile, quote) {
       </div>
     </div>
     <div class="price-block">
-      <div class="current-price">$${fmtNum(quote.c)}</div>
+      <div class="current-price" id="headerPrice">$${fmtNum(quote.c)}</div>
       <div class="price-change ${dir}">${sign}$${fmtNum(Math.abs(change))} (${sign}${fmtPct(pct)})</div>
       <div class="price-sub">H: $${fmtNum(quote.h)} · L: $${fmtNum(quote.l)} · Open: $${fmtNum(quote.o)}</div>
     </div>`;
+
+  // Price flash: green glow if up, red glow if down
+  if (change !== 0) {
+    requestAnimationFrame(() => {
+      const priceEl = el('headerPrice');
+      if (!priceEl) return;
+      const cls = change >= 0 ? 'price-flash-up' : 'price-flash-down';
+      priceEl.classList.add(cls);
+      setTimeout(() => priceEl.classList.remove(cls), 900);
+    });
+  }
 }
 
 // ── TOP STATS ─────────────────────────────────────────────────────────────────
@@ -471,8 +541,12 @@ function renderTopStats(quote, metrics, profile) {
     { label:'Dividend Yield',  value: m.dividendYieldIndicatedAnnual ? fmtPct(m.dividendYieldIndicatedAnnual) : 'None', sub:'Indicated' },
     { label:'Revenue/Share',   value: m.revenuePerShareTTM ? '$'+fmtNum(m.revenuePerShareTTM) : '—', sub:'TTM' },
   ];
-  el('topStats').innerHTML = stats.map(s =>
-    `<div class="stat-card"><div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div><div class="stat-sub">${s.sub}</div></div>`
+  el('topStats').innerHTML = stats.map((s, i) =>
+    `<div class="stat-card" style="animation:sectionIn .4s ${(i * 0.055).toFixed(3)}s both">
+      <div class="stat-label">${s.label}</div>
+      <div class="stat-value">${s.value}</div>
+      <div class="stat-sub">${s.sub}</div>
+    </div>`
   ).join('');
 }
 
@@ -522,16 +596,16 @@ function renderRecommendation(recs) {
 // ── VALUATION ─────────────────────────────────────────────────────────────────
 function metricRows(rows) { return rows.map(([l,v]) => `<div class="metric-row"><span class="metric-label">${l}</span><span class="metric-value">${v}</span></div>`).join(''); }
 function renderValuation(m) {
-  el('valuationContent').innerHTML = metricRows([
-    ['P/E (TTM)',        fmtNum(m.peBasicExclExtraTTM, 1)],
-    ['P/E (Annual)',     fmtNum(m.peExclExtraAnnual, 1)],
-    ['Forward P/E',     fmtNum(m.peNormalizedAnnual, 1)],
-    ['PEG Ratio',       fmtNum(m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM/m.epsGrowthTTMYoy : null, 2)],
-    ['P/B Ratio',       fmtNum(m.pbAnnual, 2)],
-    ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2)],
-    ['P/CF (TTM)',      fmtNum(m.pcfShareTTM, 2)],
-    ['EV/EBITDA',       fmtNum(m.evEbitdaTTM, 1)],
-    ['EV/Revenue',      fmtNum(m.evRevenueTTM, 2)],
+  el('valuationContent').innerHTML = metricRowsTipped([
+    ['P/E (TTM)',        fmtNum(m.peBasicExclExtraTTM, 1), 'Price ÷ Earnings (trailing 12 months). Below 15 is cheap; above 30 is expensive for most sectors.'],
+    ['P/E (Annual)',     fmtNum(m.peExclExtraAnnual, 1),   'Annual P/E excluding one-time items for a cleaner comparison.'],
+    ['Forward P/E',     fmtNum(m.peNormalizedAnnual, 1),  'P/E based on next-year earnings estimates. Lower than TTM P/E = expected growth.'],
+    ['PEG Ratio',       fmtNum(m.peBasicExclExtraTTM && m.epsGrowthTTMYoy ? m.peBasicExclExtraTTM/m.epsGrowthTTMYoy : null, 2), 'P/E ÷ EPS Growth rate. PEG < 1 often signals undervaluation. Popularised by Peter Lynch.'],
+    ['P/B Ratio',       fmtNum(m.pbAnnual, 2),             'Price ÷ Book Value. Below 1 may mean assets exceed market cap; high P/B common in tech.'],
+    ['P/S Ratio (TTM)', fmtNum(m.psTTM, 2),                'Price ÷ Revenue per share. Useful for unprofitable growth companies where P/E doesn't apply.'],
+    ['P/CF (TTM)',      fmtNum(m.pcfShareTTM, 2),          'Price ÷ Cash Flow per share. Cash flow is harder to manipulate than earnings — a quality check.'],
+    ['EV/EBITDA',       fmtNum(m.evEbitdaTTM, 1),          'Enterprise Value ÷ EBITDA. Below 10 is generally cheap; used for acquisitions and comparisons across capital structures.'],
+    ['EV/Revenue',      fmtNum(m.evRevenueTTM, 2),         'Enterprise Value ÷ Revenue. Useful when EBITDA is negative; common in SaaS / high-growth companies.'],
   ]);
 }
 
@@ -631,28 +705,28 @@ function updateDCF() {
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 function renderHealth(m) {
-  el('healthContent').innerHTML = metricRows([
-    ['Current Ratio',     fmtNum(m.currentRatioAnnual, 2)],
-    ['Quick Ratio',       fmtNum(m.quickRatioAnnual, 2)],
-    ['Debt/Equity',       fmtNum(m['totalDebt/totalEquityAnnual'], 2)],
-    ['LT Debt/Equity',    fmtNum(m['longTermDebt/equityAnnual'], 2)],
-    ['Interest Coverage', fmtNum(m.netInterestCoverageAnnual, 1)],
-    ['Net Debt',          m.netDebtAnnual != null ? fmtM(m.netDebtAnnual) : '—'],
-    ['Cash/Share',        m.cashPerShareAnnual ? '$'+fmtNum(m.cashPerShareAnnual) : '—'],
-    ['Book Value/Sh',     m.bookValuePerShareAnnual ? '$'+fmtNum(m.bookValuePerShareAnnual) : '—'],
+  el('healthContent').innerHTML = metricRowsTipped([
+    ['Current Ratio',     fmtNum(m.currentRatioAnnual, 2),            'Current Assets ÷ Current Liabilities. Above 1.5 is healthy; below 1 signals potential liquidity stress.'],
+    ['Quick Ratio',       fmtNum(m.quickRatioAnnual, 2),              'Like Current Ratio but excludes inventory — a stricter liquidity test. Above 1 is good.'],
+    ['Debt/Equity',       fmtNum(m['totalDebt/totalEquityAnnual'], 2),'Total Debt ÷ Shareholder Equity. Below 1 is conservative; above 2 is highly leveraged.'],
+    ['LT Debt/Equity',    fmtNum(m['longTermDebt/equityAnnual'], 2),  'Long-term debt only. Reflects the structural leverage of the business.'],
+    ['Interest Coverage', fmtNum(m.netInterestCoverageAnnual, 1),     'EBIT ÷ Interest Expense. Above 5 is comfortable. Below 2 signals risk of not covering debt costs.'],
+    ['Net Debt',          m.netDebtAnnual != null ? fmtM(m.netDebtAnnual) : '—', 'Total Debt minus Cash. Negative = net cash position (debt-free).'],
+    ['Cash/Share',        m.cashPerShareAnnual ? '$'+fmtNum(m.cashPerShareAnnual) : '—', 'Cash and equivalents per share. Higher is safer; provides a buffer in downturns.'],
+    ['Book Value/Sh',     m.bookValuePerShareAnnual ? '$'+fmtNum(m.bookValuePerShareAnnual) : '—', 'Net assets per share. Compares to price via P/B ratio; represents liquidation value.'],
   ]);
 }
 
 // ── PROFITABILITY ─────────────────────────────────────────────────────────────
 function renderProfitability(m) {
-  el('profitContent').innerHTML = metricRows([
-    ['Gross Margin (TTM)',  fmtPct(m.grossMarginTTM)],
-    ['Net Profit Margin',  fmtPct(m.netProfitMarginTTM)],
-    ['Operating Margin',   fmtPct(m.operatingMarginTTM)],
-    ['ROE (TTM)',           fmtPct(m.roeTTM)],
-    ['ROA (TTM)',           fmtPct(m.roaTTM)],
-    ['Asset Turnover',     fmtNum(m.assetTurnoverAnnual, 2)],
-    ['Inventory Turnover', fmtNum(m.inventoryTurnoverAnnual, 1)],
+  el('profitContent').innerHTML = metricRowsTipped([
+    ['Gross Margin (TTM)',  fmtPct(m.grossMarginTTM),          'Revenue minus COGS, as a % of revenue. Higher = stronger pricing power and cost efficiency.'],
+    ['Net Profit Margin',  fmtPct(m.netProfitMarginTTM),      'Net income as a % of revenue. The bottom-line efficiency. Above 10% is strong for most industries.'],
+    ['Operating Margin',   fmtPct(m.operatingMarginTTM),      'Operating profit as a % of revenue. Excludes taxes & interest — shows core business profitability.'],
+    ['ROE (TTM)',           fmtPct(m.roeTTM),                  'Return on Equity: Net Income ÷ Shareholders Equity. Above 15% is excellent. Buffett benchmark.'],
+    ['ROA (TTM)',           fmtPct(m.roaTTM),                  'Return on Assets: Net Income ÷ Total Assets. Shows how efficiently management uses assets.'],
+    ['Asset Turnover',     fmtNum(m.assetTurnoverAnnual, 2),  'Revenue ÷ Total Assets. Higher = more revenue generated per dollar of assets.'],
+    ['Inventory Turnover', fmtNum(m.inventoryTurnoverAnnual, 1), 'Cost of Goods Sold ÷ Inventory. Higher = faster inventory cycles and less capital tied up.'],
   ]);
 }
 
