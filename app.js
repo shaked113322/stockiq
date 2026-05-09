@@ -276,9 +276,10 @@ async function analyze(ticker) {
 
     hide('loading');
     show('dashboard');
-    el('compareToggleBtn').style.display = '';
-    el('exportBtn').style.display        = '';
-    el('watchlistBtn').style.display     = '';
+    // These buttons live inside rendered HTML — use ?. to avoid null crash
+    if (el('compareToggleBtn')) el('compareToggleBtn').style.display = '';
+    if (el('exportBtn'))        el('exportBtn').style.display        = '';
+    if (el('watchlistBtn'))     el('watchlistBtn').style.display     = '';
     addRecent(ticker);
     updateWatchlistBtn(ticker);
     updateBottomBar(ticker);
@@ -1327,7 +1328,6 @@ let _screenerLoaded    = false;
 let _screenerData      = [];
 let _screenerFiltered  = [];   // currently filtered+sorted slice
 let _screenerDisplayed = 20;   // how many rows are rendered right now
-let _screenerObserver  = null; // IntersectionObserver for infinite scroll
 let _screenerFmpDone   = false;// true once FMP batch has returned
 let _marketLoaded      = false;
 let _marketPeriod   = '1D';
@@ -1547,8 +1547,6 @@ async function loadScreener(force = false) {
   _screenerData      = [];
   _screenerFiltered  = [];
   _screenerDisplayed = 20;
-  _screenerObserver?.disconnect();
-  _screenerObserver  = null;
 
   const wrap = el('screenerTableWrap');
   wrap.innerHTML = `<div style="padding:40px;text-align:center">
@@ -1738,14 +1736,11 @@ function renderScreenerTable() {
     </tr>`;
   }).join('');
 
-  // Sentinel div — IntersectionObserver watches this to trigger more rows
+  // Footer row
   const sentinel = hasMore
-    ? `<div id="screenerSentinel"
-          style="height:56px;display:flex;align-items:center;justify-content:center;
-                 color:var(--text2);font-size:13px;gap:8px">
-         <div class="spinner" style="width:18px;height:18px;border-width:2px"></div>
-         Loading more…
-       </div>`
+    ? `<p style="text-align:center;padding:12px 4px;color:var(--text2);font-size:12px">
+         ↓ Scroll for more (${_screenerDisplayed} / ${data.length})
+       </p>`
     : `<p style="text-align:center;padding:12px 4px;color:var(--text2);font-size:11px">
          ✓ All ${data.length} stocks shown · Click any row to open full analysis
        </p>`;
@@ -1771,20 +1766,23 @@ function renderScreenerTable() {
     </div>
     ${sentinel}`;
 
-  // ── Wire up IntersectionObserver on the sentinel ──────────────────────────
-  _screenerObserver?.disconnect();
-  if (hasMore) {
-    const sentinelEl = el('screenerSentinel');
-    if (sentinelEl) {
-      _screenerObserver = new IntersectionObserver(entries => {
-        if (!entries[0].isIntersecting) return;
-        _screenerDisplayed += 20;
-        renderScreenerTable();          // re-render with more rows
-      }, { rootMargin: '120px' });      // start loading 120px before sentinel
-      _screenerObserver.observe(sentinelEl);
-    }
-  }
 }
+
+// ── Screener infinite scroll — scroll event (reliable across all browsers) ──
+window.addEventListener('scroll', () => {
+  if (_currentPage !== 'screener') return;
+  if (!_screenerLoaded) return;
+  if (_screenerDisplayed >= _screenerFiltered.length) return;
+
+  // Fire when user is within 300px of the bottom of the page
+  const distFromBottom = document.documentElement.scrollHeight
+                         - window.scrollY
+                         - window.innerHeight;
+  if (distFromBottom < 300) {
+    _screenerDisplayed += 20;
+    renderScreenerTable();
+  }
+}, { passive: true });
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PAGE 4 · MARKET OVERVIEW
