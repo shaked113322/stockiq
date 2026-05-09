@@ -1,14 +1,8 @@
 {
-  "framework": null,
-  "buildCommand": null,
-  "outputDirectory": ".",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/proxy?_ep=:path*" }
+  ],
   "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, s-maxage=900, max-age=900" }
-      ]
-    },
     {
       "source": "/style.css",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]

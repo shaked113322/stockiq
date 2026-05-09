@@ -1,6 +1,6 @@
 // ── StockIQ · Vercel Serverless Proxy ────────────────────────────────────────
-// Replaces server.js for Vercel deployment.
-// Catches all /api/* requests and proxies them securely to Finnhub.
+// All /api/* requests are rewritten here by vercel.json.
+// The Finnhub endpoint path arrives as the `_ep` query parameter.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
@@ -29,7 +29,7 @@ function finnhubFetch(endpoint, params) {
       let size = 0, body = '';
       res.on('data', chunk => {
         size += chunk.length;
-        if (size > 2 * 1024 * 1024) { req.destroy(); return reject(new Error('Response too large')); }
+        if (size > 2 * 1024 * 1024) { req.destroy(); return reject(new Error('Too large')); }
         body += chunk;
       });
       res.on('end', () => {
@@ -38,44 +38,40 @@ function finnhubFetch(endpoint, params) {
       });
     });
     req.on('error', reject);
-    req.setTimeout(FETCH_TIMEOUT, () => { req.destroy(); reject(new Error('Finnhub timeout')); });
+    req.setTimeout(FETCH_TIMEOUT, () => { req.destroy(); reject(new Error('Timeout')); });
   });
 }
 
 module.exports = async function handler(req, res) {
-  // Security headers
-  res.setHeader('X-Content-Type-Options',  'nosniff');
-  res.setHeader('X-Frame-Options',         'DENY');
-  res.setHeader('Referrer-Policy',         'no-referrer');
-  res.setHeader('Permissions-Policy',      'geolocation=(), microphone=(), camera=()');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options',        'DENY');
+  res.setHeader('Referrer-Policy',        'no-referrer');
 
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Build Finnhub endpoint path from catch-all segments
-  // e.g.  /api/stock/profile2  →  path = ['stock','profile2']  →  endpoint = '/stock/profile2'
-  const { path: pathSegments, ...queryParams } = req.query;
-  const endpoint = '/' + (Array.isArray(pathSegments) ? pathSegments.join('/') : pathSegments || '');
+  // _ep is injected by the vercel.json rewrite: /api/:path* → /api/proxy?_ep=:path*
+  const { _ep, ...queryParams } = req.query;
+  const endpoint = '/' + (_ep || '');
 
   if (!ALLOWED_ENDPOINTS.some(a => endpoint.startsWith(a))) {
-    return res.status(400).json({ error: 'Endpoint not allowed' });
+    return res.status(400).json({ error: 'Endpoint not allowed', endpoint });
   }
 
-  // Sanitize query params — drop unknown keys, token, unsafe values
+  // Sanitize — only known keys, no token, safe characters only
   const params = {};
-  let paramCount = 0;
+  let n = 0;
   for (const [k, v] of Object.entries(queryParams)) {
     if (k === 'token') continue;
     if (!ALLOWED_PARAM_KEYS.has(k)) continue;
-    if (paramCount++ > 8) break;
+    if (n++ > 8) break;
     const sv = String(v).slice(0, 64);
     if (!/^[a-zA-Z0-9_.:\-/]+$/.test(sv)) continue;
     params[k] = sv;
   }
 
-  // Validate ticker symbol
   if (params.symbol && !/^[A-Z0-9]{1,10}$/.test(params.symbol)) {
     return res.status(400).json({ error: 'Invalid symbol' });
   }
@@ -83,7 +79,7 @@ module.exports = async function handler(req, res) {
   try {
     const result = await finnhubFetch(endpoint, params);
     res.setHeader('Content-Type',  'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, s-maxage=900, max-age=900'); // 15-min CDN + browser cache
+    res.setHeader('Cache-Control', 'public, s-maxage=900, max-age=900');
     return res.status(result.status).json(result.data);
   } catch {
     return res.status(502).json({ error: 'Upstream unavailable' });
