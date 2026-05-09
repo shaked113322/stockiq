@@ -10,7 +10,7 @@ const ROOT        = path.resolve(__dirname);
 const FINNHUB_KEY = process.env.FINNHUB_KEY || 'd7993ehr01qqpmhft4lgd7993ehr01qqpmhft4m0';
 const CACHE_TTL   = 15 * 60 * 1000;   // 15 minutes
 const RATE_LIMIT  = 55;               // global calls/min to Finnhub
-const IP_LIMIT    = 12;               // calls/min per single IP
+const IP_LIMIT    = 45;               // calls/min per single IP (one full analysis ≈ 20-25 calls)
 const FETCH_TIMEOUT = 8000;           // ms before Finnhub request is aborted
 
 // ── SERVER-SIDE CACHE ─────────────────────────────────────────────

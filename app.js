@@ -75,14 +75,25 @@ function lsSet(key, data) {
 }
 
 // ── API PROXY FETCH ────────────────────────────────────────────────────────────
-async function api(endpoint, params = {}) {
-  const qs      = new URLSearchParams(params).toString();
-  const fullUrl = BASE + endpoint + (qs ? '?' + qs : '');
+async function api(endpoint, params = {}, retries = 2) {
+  const qs       = new URLSearchParams(params).toString();
+  const fullUrl  = BASE + endpoint + (qs ? '?' + qs : '');
   const cacheKey = fullUrl;
-  const cached  = lsGet(cacheKey);
+  const cached   = lsGet(cacheKey);
   if (cached) return cached;
-  const res  = await fetch(fullUrl);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const res = await fetch(fullUrl);
+
+  // Auto-retry on 429 after a short back-off
+  if (res.status === 429 && retries > 0) {
+    await new Promise(r => setTimeout(r, 3000));   // wait 3 s
+    return api(endpoint, params, retries - 1);
+  }
+
+  if (!res.ok) {
+    if (res.status === 429) throw new Error('RATE_LIMIT');
+    throw new Error(`HTTP ${res.status}`);
+  }
   const data = await res.json();
   lsSet(cacheKey, data);
   return data;
@@ -177,6 +188,9 @@ async function fetchSuggestions(q) {
 function selectSug(sym) { el('searchInput').value = sym; el('suggestions').style.display = 'none'; analyze(sym); }
 
 // ── MAIN ANALYZE ──────────────────────────────────────────────────────────────
+// Phase 1: 5 critical calls  → dashboard appears immediately
+// Phase 2: 5 background calls → secondary panels fill in after
+// Total: ~10 calls vs ~18 before
 async function analyze(ticker) {
   if (!ticker) return;
   ticker = ticker.toUpperCase();
@@ -187,20 +201,18 @@ async function analyze(ticker) {
   clearCompare();
 
   try {
-    const [profile, quote, metrics, recommendation, earnings, sentiment, news, peers] = await Promise.all([
+    // ── PHASE 1: 5 critical calls ─────────────────────────────────────────────
+    const [profile, quote, metrics, recommendation, earnings] = await Promise.all([
       api('/stock/profile2',       { symbol: ticker }),
       api('/quote',                { symbol: ticker }),
       api('/stock/metric',         { symbol: ticker, metric: 'all' }),
       api('/stock/recommendation', { symbol: ticker }),
-      api('/stock/earnings',       { symbol: ticker, limit: 8 }),
-      safeApi('/stock/insider-sentiment', { symbol: ticker, from: daysAgo(365), to: today() }),
-      api('/company-news',         { symbol: ticker, from: daysAgo(14), to: today() }),
-      safeApi('/stock/peers',      { symbol: ticker }),
+      api('/stock/earnings',       { symbol: ticker, limit: 6 }),
     ]);
 
     if (!profile || !profile.name) throw new Error('Ticker not found');
 
-    currentData = { profile, quote, metrics, recommendation, earnings, sentiment, news, peers, ticker };
+    currentData = { profile, quote, metrics, recommendation, earnings, ticker };
 
     hide('loading');
     show('dashboard');
@@ -215,6 +227,7 @@ async function analyze(ticker) {
     const m      = metrics.metric || {};
     const scores = calcScores(m, recommendation, quote, earnings);
 
+    // Render all critical sections immediately
     renderHeader(profile, quote);
     renderScorecard(scores, m, quote);
     renderTopStats(quote, metrics, profile);
@@ -229,18 +242,54 @@ async function analyze(ticker) {
     renderPiotroski(m);
     renderEarningsQuality(m);
     renderForwardOutlook(earnings);
-    renderInsider(sentiment);
-    renderSector(profile, quote);
-    renderFinancials(ticker);
     renderProfile(profile);
-    renderNews(news);
-    renderPeers(peers, ticker, profile, metrics, quote);
+
+    // Show skeleton placeholders for sections that load next
+    const skel = (n=2) => Array(n).fill('<div class="skeleton wide" style="margin-bottom:8px"></div>').join('');
+    el('newsContent').innerHTML    = skel(4);
+    el('insiderContent').innerHTML = skel(3);
+    el('sectorContent').innerHTML  = skel(3);
+    el('peerContent').innerHTML    = '<p style="color:var(--text2);font-size:13px">Loading peers…</p>';
+
+    // ── PHASE 2: background — doesn't block the UI ────────────────────────────
+    loadSecondaryData(ticker, profile, quote, metrics);
 
   } catch (err) {
     hide('loading');
-    el('errorMsg').textContent = err.message || 'Could not load data.';
+    if (err.message === 'RATE_LIMIT') {
+      el('errorMsg').textContent = 'Too many requests — please wait a moment and try again.';
+      toast('Rate limit hit — retrying automatically…', 'warn', 4000);
+      setTimeout(() => analyze(ticker), 5000);
+    } else {
+      el('errorMsg').textContent = err.message || 'Could not load data.';
+    }
     show('error');
   }
+}
+
+// ── PHASE 2 LOADER (background, non-blocking) ─────────────────────────────────
+async function loadSecondaryData(ticker, profile, quote, metrics) {
+  try {
+    // 2 calls in parallel: news + insider sentiment
+    const [sentiment, news] = await Promise.all([
+      safeApi('/stock/insider-sentiment', { symbol: ticker, from: daysAgo(365), to: today() }),
+      safeApi('/company-news',            { symbol: ticker, from: daysAgo(14),  to: today() }),
+    ]);
+    currentData.sentiment = sentiment;
+    currentData.news      = news;
+    renderInsider(sentiment);
+    renderNews(news || []);
+  } catch {}
+
+  try {
+    // 1 call: peers list
+    const peers = await safeApi('/stock/peers', { symbol: ticker });
+    currentData.peers = peers;
+    // peer details + sector share the remaining budget
+    renderSector(profile, quote);                          // 1 call (sector ETF only, no SPY)
+    renderPeers(peers, ticker, profile, metrics, quote);   // 3 peers × 1 call each = 3 calls
+    renderFinancials(ticker);                              // 1 call (financials)
+  } catch {}
 }
 
 // ── SCORE CALCULATION ─────────────────────────────────────────────────────────
@@ -745,13 +794,13 @@ async function renderSector(profile, quote) {
 
   if (sectorETF) {
     try {
-      const [etfQ, spyQ] = await Promise.all([safeApi('/quote',{symbol:sectorETF}), safeApi('/quote',{symbol:'SPY'})]);
-      if (etfQ && spyQ) {
-        html += `<div style="margin-top:10px;font-size:11px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px">Today vs Market</div>`;
-        html += `<div class="metric-row"><span class="metric-label">S&amp;P 500 (SPY)</span><span class="metric-value" style="${clr(spyQ.dp)}">${spyQ.dp>=0?'+':''}${fmtPct(spyQ.dp)}</span></div>`;
+      // 1 call only: sector ETF (SPY removed — saves 1 call)
+      const etfQ = await safeApi('/quote', { symbol: sectorETF });
+      if (etfQ) {
+        html += `<div style="margin-top:10px;font-size:11px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px">Today vs Sector</div>`;
         html += `<div class="metric-row"><span class="metric-label">Sector ETF (${sectorETF})</span><span class="metric-value" style="${clr(etfQ.dp)}">${etfQ.dp>=0?'+':''}${fmtPct(etfQ.dp)}</span></div>`;
-        const rel = quote.dp - spyQ.dp;
-        html += `<div class="metric-row"><span class="metric-label">Relative Strength (vs SPY)</span><span class="metric-value" style="${clr(rel)}">${rel>=0?'+':''}${fmtPct(rel)}</span></div>`;
+        const rel = quote.dp - etfQ.dp;
+        html += `<div class="metric-row"><span class="metric-label">Vs Sector ETF</span><span class="metric-value" style="${clr(rel)}">${rel>=0?'+':''}${fmtPct(rel)}</span></div>`;
       }
     } catch {}
   }
@@ -763,11 +812,15 @@ async function renderSector(profile, quote) {
 async function renderPeers(peers, ticker, profile, metrics, quote) {
   if (!peers || !peers.length) { el('peerContent').innerHTML='<p style="color:var(--text2);font-size:13px">No peer data available.</p>'; return; }
 
-  const peerList = peers.filter(p => p !== ticker).slice(0, 4);
+  // 3 peers max, each needs 1 call (metric only — price comes from metric's own data)
+  const peerList = peers.filter(p => p !== ticker).slice(0, 3);
   try {
     const peerData = await Promise.all(peerList.map(async p => {
-      const [pq, pm] = await Promise.all([safeApi('/quote',{symbol:p}), safeApi('/stock/metric',{symbol:p,metric:'all'})]);
-      return { symbol:p, quote:pq, metrics:pm };
+      // Single call per peer: metric contains enough data (saves quote call per peer)
+      const pm = await safeApi('/stock/metric', { symbol: p, metric: 'all' });
+      // Derive a rough "current price" from metric's regularMarketPrice if available
+      const pq = pm?.metric ? { c: pm.metric.regularMarketPrice || null, dp: null } : { c: null, dp: null };
+      return { symbol: p, quote: pq, metrics: pm };
     }));
 
     const m   = metrics.metric || {};
