@@ -724,39 +724,68 @@ function renderEarningsQuality(m) {
 
 // ── FORWARD OUTLOOK ───────────────────────────────────────────────────────────
 function renderForwardOutlook(earnings) {
-  el('epsEstContent').innerHTML = '<p style="color:var(--text2);font-size:13px">📌 EPS estimates require Finnhub premium.</p>';
-  el('revEstContent').innerHTML = '<p style="color:var(--text2);font-size:13px">📌 Revenue estimates require Finnhub premium.</p>';
-
-  if (!earnings || !earnings.length) { el('earningsContent').innerHTML='<p style="color:var(--text2);font-size:13px">No earnings data.</p>'; return; }
-
-  const dates = earnings.filter(e=>e.period).map(e=>new Date(e.period)).sort((a,b)=>b-a);
-  let nextEarnings = 'Unknown';
-  if (dates.length) {
-    const last = dates[0]; const next = new Date(last); next.setDate(next.getDate()+91);
-    if (next > new Date()) nextEarnings = next.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'});
+  if (!earnings || !earnings.length) {
+    el('earningsContent').innerHTML = '<p style="color:var(--text2);font-size:13px">No earnings data available.</p>';
+    return;
   }
 
+  // Estimate next earnings date from last reported quarter (+91 days)
+  const dates = earnings.filter(e => e.period).map(e => new Date(e.period)).sort((a,b) => b-a);
+  let nextEarnings = null;
+  if (dates.length) {
+    const next = new Date(dates[0]);
+    next.setDate(next.getDate() + 91);
+    if (next > new Date()) nextEarnings = next.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+  }
+
+  // Beat rate stats
+  const withData = earnings.filter(e => e.actual != null && e.estimate != null);
+  const beats    = withData.filter(e => e.actual >= e.estimate).length;
+  const beatRate = withData.length ? beats / withData.length * 100 : null;
+
+  // Avg EPS surprise %
+  const surprises = withData.map(e => e.estimate ? (e.actual - e.estimate) / Math.abs(e.estimate) * 100 : null).filter(v => v != null);
+  const avgSurp   = surprises.length ? surprises.reduce((a,b) => a+b, 0) / surprises.length : null;
+
   el('earningsContent').innerHTML = `
-    ${nextEarnings !== 'Unknown' ? `<div style="background:var(--surface2);border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">📅</span><div><div style="font-size:12px;color:var(--text2)">Next Earnings (Estimated)</div><div style="font-weight:700">${nextEarnings}</div></div></div>` : ''}
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Period</th><th>Estimate</th><th>Actual</th><th>Surprise</th><th>Beat?</th></tr></thead>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      ${nextEarnings ? `
+        <div style="flex:1;min-width:140px;background:var(--surface2);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:10px">
+          <span style="font-size:20px">📅</span>
+          <div><div style="font-size:11px;color:var(--text2)">Next Earnings (Est.)</div><div style="font-weight:700;font-size:14px">${nextEarnings}</div></div>
+        </div>` : ''}
+      ${beatRate != null ? `
+        <div style="flex:1;min-width:120px;background:var(--surface2);border-radius:8px;padding:12px 14px;text-align:center">
+          <div style="font-size:22px;font-weight:800;color:${beatRate>=60?'var(--green)':beatRate>=40?'var(--yellow)':'var(--red)'}">${fmtPct(beatRate)}</div>
+          <div style="font-size:11px;color:var(--text2)">Beat Rate (${withData.length}Q)</div>
+        </div>` : ''}
+      ${avgSurp != null ? `
+        <div style="flex:1;min-width:120px;background:var(--surface2);border-radius:8px;padding:12px 14px;text-align:center">
+          <div style="font-size:22px;font-weight:800;${clr(avgSurp)}">${avgSurp>0?'+':''}${fmtPct(avgSurp)}</div>
+          <div style="font-size:11px;color:var(--text2)">Avg EPS Surprise</div>
+        </div>` : ''}
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Period</th><th>Estimate</th><th>Actual</th><th>Surprise</th><th>Result</th></tr></thead>
       <tbody>
-        ${earnings.slice(0,8).map(e => {
-          const surp = e.actual!=null&&e.estimate!=null ? e.actual-e.estimate : null;
-          const beat = surp!=null && surp>=0;
-          const pct  = surp!=null&&e.estimate ? surp/Math.abs(e.estimate)*100 : null;
+        ${earnings.slice(0, 6).map(e => {
+          const surp = e.actual!=null && e.estimate!=null ? e.actual - e.estimate : null;
+          const beat = surp != null && surp >= 0;
+          const pct  = surp!=null && e.estimate ? surp / Math.abs(e.estimate) * 100 : null;
           return `<tr>
             <td>${e.period||'—'}</td>
-            <td>$${fmtNum(e.estimate)}</td>
-            <td>$${fmtNum(e.actual)}</td>
+            <td>${e.estimate!=null?'$'+fmtNum(e.estimate):'—'}</td>
+            <td>${e.actual!=null?'$'+fmtNum(e.actual):'—'}</td>
             <td class="${surp==null?'':beat?'beat':'miss'}">${surp==null?'—':(beat?'+':'')+fmtNum(surp)}</td>
-            <td>${surp==null?'—':beat?'<span style="color:var(--green)">✓ Beat</span>':'<span style="color:var(--red)">✗ Miss</span>'} ${pct!=null?`<span style="font-size:10px;color:var(--text2)">(${beat?'+':''}${fmtPct(pct)})</span>`:''}</td>
+            <td>${surp==null?'—':beat
+              ?`<span style="color:var(--green)">✓ Beat</span>`
+              :`<span style="color:var(--red)">✗ Miss</span>`}
+              ${pct!=null?`<span style="font-size:10px;color:var(--text2);margin-left:4px">(${beat?'+':''}${fmtPct(pct)})</span>`:''}
+            </td>
           </tr>`;
         }).join('')}
       </tbody>
-    </table></div>
-    <div style="font-size:11px;color:var(--text2);margin-top:6px">Beat rate: ${fmtPct(earnings.filter(e=>e.actual!=null&&e.estimate!=null&&e.actual>=e.estimate).length/earnings.filter(e=>e.actual!=null&&e.estimate!=null).length*100)} of last ${earnings.filter(e=>e.actual!=null&&e.estimate!=null).length} quarters</div>`;
+    </table></div>`;
 }
 
 // ── INSIDER SENTIMENT ─────────────────────────────────────────────────────────
@@ -863,7 +892,8 @@ async function renderFinancials(ticker) {
   try {
     const data = await safeApi('/stock/financials-reported', { symbol:ticker, freq:'annual' });
     if (!data || !data.data || !data.data.length) {
-      ['income','balance','cashflow'].forEach(p => el(p+'Panel').innerHTML='<p style="color:var(--text2);font-size:13px;padding:8px 0">Financial statements require Finnhub premium.</p>');
+      // Fallback: build metric-derived tables from already-loaded /stock/metric data
+      renderFinancialsFromMetrics();
       return;
     }
     const reports = data.data.slice(0, 4);
@@ -919,8 +949,53 @@ async function renderFinancials(ticker) {
     }).join('');
     el('cashflowPanel').innerHTML = cfTable.replace('</tbody>', `<tr><td>Free Cash Flow</td>${freeCFRow}</tr></tbody>`);
   } catch {
-    ['income','balance','cashflow'].forEach(p => el(p+'Panel').innerHTML='<p style="color:var(--text2);font-size:13px;padding:8px 0">Failed to load.</p>');
+    renderFinancialsFromMetrics();
   }
+}
+
+// ── FINANCIALS FALLBACK (built from /stock/metric — no extra API call) ────────
+function renderFinancialsFromMetrics() {
+  const m = currentData.metrics?.metric || {};
+  const g = v => { if (v==null||isNaN(v)) return '<span style="color:var(--text2)">—</span>'; const c=v>0?'var(--green)':'var(--red)'; return `<span style="color:${c}">${v>0?'+':''}${fmtPct(v)}</span>`; };
+  const r = (label, value) => `<div class="metric-row"><span class="metric-label">${label}</span><span class="metric-value">${value}</span></div>`;
+  const note = '<div style="font-size:11px;color:var(--text2);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">Based on TTM / annual metrics · Full XBRL statements require Finnhub premium</div>';
+
+  el('incomePanel').innerHTML = [
+    r('Gross Margin (TTM)',       fmtPct(m.grossMarginTTM)),
+    r('Operating Margin (TTM)',   fmtPct(m.operatingMarginTTM)),
+    r('Net Profit Margin (TTM)',  fmtPct(m.netProfitMarginTTM)),
+    r('EPS (Annual)',             m.epsBasicExclExtraItemsAnnual ? '$'+fmtNum(m.epsBasicExclExtraItemsAnnual) : '—'),
+    r('EPS Normalized (Annual)',  m.epsNormalizedAnnual ? '$'+fmtNum(m.epsNormalizedAnnual) : '—'),
+    r('Revenue / Share (TTM)',    m.revenuePerShareTTM ? '$'+fmtNum(m.revenuePerShareTTM) : '—'),
+    r('Revenue Growth (TTM YoY)', g(m.revenueGrowthTTMYoy)),
+    r('Revenue Growth (5Y)',      g(m.revenueGrowth5Y)),
+    r('EPS Growth (TTM YoY)',     g(m.epsGrowthTTMYoy)),
+    r('EPS Growth (5Y)',          g(m.epsGrowth5Y)),
+  ].join('') + note;
+
+  el('balancePanel').innerHTML = [
+    r('Current Ratio',      fmtNum(m.currentRatioAnnual, 2)),
+    r('Quick Ratio',        fmtNum(m.quickRatioAnnual, 2)),
+    r('Debt / Equity',      fmtNum(m['totalDebt/totalEquityAnnual'], 2)),
+    r('LT Debt / Equity',   fmtNum(m['longTermDebt/equityAnnual'], 2)),
+    r('Net Debt',           m.netDebtAnnual != null ? fmtM(m.netDebtAnnual) : '—'),
+    r('Book Value / Share', m.bookValuePerShareAnnual ? '$'+fmtNum(m.bookValuePerShareAnnual) : '—'),
+    r('Cash / Share',       m.cashPerShareAnnual ? '$'+fmtNum(m.cashPerShareAnnual) : '—'),
+    r('ROE (TTM)',           fmtPct(m.roeTTM)),
+    r('ROA (TTM)',           fmtPct(m.roaTTM)),
+    r('P / Book (Annual)',   fmtNum(m.pbAnnual, 2)),
+  ].join('') + note;
+
+  el('cashflowPanel').innerHTML = [
+    r('P / Cash Flow (TTM)',    fmtNum(m.pcfShareTTM, 2)),
+    r('EV / EBITDA (TTM)',      fmtNum(m.evEbitdaTTM, 1)),
+    r('Interest Coverage',      fmtNum(m.netInterestCoverageAnnual, 1)),
+    r('Asset Turnover',         fmtNum(m.assetTurnoverAnnual, 2)),
+    r('Inventory Turnover',     fmtNum(m.inventoryTurnoverAnnual, 1)),
+    r('Dividend Yield',         m.dividendYieldIndicatedAnnual ? fmtPct(m.dividendYieldIndicatedAnnual) : 'None'),
+    r('Dividend Growth (5Y)',   g(m.dividendGrowthRate5Y)),
+    r('Book Value Growth (5Y)', g(m.bookValueGrowth5Y)),
+  ].join('') + note;
 }
 
 // ── PROFILE ───────────────────────────────────────────────────────────────────
