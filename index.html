@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="theme-color" content="#161b22"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net; font-src 'self'; object-src 'none'; base-uri 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://*.vercel-insights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://cdn.jsdelivr.net https://*.vercel-insights.com; font-src 'self'; object-src 'none'; base-uri 'self';">
 <meta name="referrer" content="no-referrer"/>
 <meta name="description" content="StockIQ — Professional stock fundamental analysis: valuation, scoring, DCF, peers, and live news."/>
 <title>StockIQ — Fundamental Analysis</title>
@@ -247,5 +247,12 @@
 
 <!-- ── FRONTEND LOGIC ──────────────────────────────────────────────────────── -->
 <script src="app.js?v=1.8" defer></script>
+
+<!-- ── VERCEL WEB ANALYTICS ────────────────────────────────────────────────── -->
+<script>
+  window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+</script>
+<script defer src="/_vercel/insights/script.js"></script>
+
 </body>
 </html>
