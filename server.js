@@ -235,10 +235,19 @@ http.createServer(async (req, res) => {
       return;
     }
 
-    // Validate endpoint against allowlist
-    const endpoint = pathname.replace('/api', '');
+    // Validate endpoint against allowlist.
+    // Supports both legacy /api/<path> and new /api/proxy?_ep=<path> (Vercel-friendly).
+    let endpoint;
+    if (pathname === '/api/proxy') {
+      // New pattern: endpoint is in _ep query param (URLSearchParams encodes / as %2F)
+      const rawEp = parsed.searchParams.get('_ep') || '';
+      endpoint = '/' + decodeURIComponent(rawEp);
+    } else {
+      endpoint = pathname.replace('/api', '');
+    }
+
     if (!ALLOWED_ENDPOINTS.some(a => endpoint.startsWith(a))) {
-      sendJson(res, 400, { error: 'Endpoint not allowed' });
+      sendJson(res, 400, { error: 'Endpoint not allowed', endpoint });
       return;
     }
 
@@ -246,7 +255,7 @@ http.createServer(async (req, res) => {
     const params = {};
     let paramCount = 0;
     for (const [k, v] of parsed.searchParams) {
-      if (k === 'token') continue;
+      if (k === 'token' || k === '_ep') continue;  // skip proxy meta-params
       if (!ALLOWED_PARAM_KEYS.has(k)) continue;
       if (paramCount++ > 8) break;
       const sv = String(v).slice(0, 64);
