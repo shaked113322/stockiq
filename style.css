@@ -515,3 +515,195 @@ tr:last-child td { border-bottom: none; }
   .card, .stat-card, .scorecard, .company-header { border: 1px solid #ccc; break-inside: avoid; }
   #dashboard { display: block !important; }
 }
+
+/* ══════════════════════════════════════════════════════
+   PROFESSIONAL POLISH
+   Enhancements: animations · hover states · typography
+   · transitions · accessibility · visual refinements
+══════════════════════════════════════════════════════ */
+
+/* ── BASE TYPOGRAPHY ──────────────────────────────────── */
+body { line-height: 1.5; -webkit-font-smoothing: antialiased; }
+
+/* ── NAV GLASSMORPHISM ────────────────────────────────── */
+nav {
+  background: rgba(22, 27, 34, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.logo { transition: opacity .2s; }
+.logo:hover { opacity: .8; cursor: pointer; }
+
+/* ── SEARCH REFINEMENTS ───────────────────────────────── */
+#searchInput { transition: border-color .2s, box-shadow .2s; }
+#searchInput:focus { box-shadow: 0 0 0 3px rgba(88,166,255,.18); }
+#suggestions { box-shadow: 0 8px 32px rgba(0,0,0,.5); animation: dropIn .15s ease; }
+@keyframes dropIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+.sug-item { transition: background .12s; }
+
+/* ── BUTTONS ──────────────────────────────────────────── */
+.nav-btn {
+  transition: opacity .2s, box-shadow .2s, transform .1s;
+  letter-spacing: .2px;
+}
+.nav-btn:hover { opacity: .88; transform: translateY(-1px); }
+.nav-btn:active { transform: translateY(0); }
+.nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nav-btn.secondary:hover { border-color: var(--accent); color: var(--accent); opacity: 1; }
+
+/* ── DASHBOARD ENTRANCE ANIMATION ────────────────────── */
+@keyframes sectionIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#dashboard { animation: sectionIn .35s ease both; }
+
+/* ── CARDS — elevated hover ───────────────────────────── */
+.card, .stat-card, .scorecard, .company-header {
+  transition: box-shadow .22s ease, border-color .22s ease, transform .22s ease;
+  will-change: transform;
+}
+.card:hover, .stat-card:hover {
+  box-shadow: 0 6px 28px rgba(88,166,255,.11);
+  border-color: rgba(88,166,255,.28);
+  transform: translateY(-2px);
+}
+.scorecard:hover, .company-header:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,.25);
+}
+
+/* ── CARD TITLE accent bar refinement ────────────────── */
+.card-title {
+  font-size: 11px;
+  letter-spacing: .7px;
+  color: var(--text2);
+}
+.card-title::before {
+  background: linear-gradient(180deg, var(--accent), var(--purple));
+  width: 3px; height: 14px;
+  border-radius: 2px;
+}
+
+/* ── METRIC ROWS ──────────────────────────────────────── */
+.metric-row {
+  border-radius: 4px;
+  transition: background .12s;
+  padding: 8px 6px;
+}
+.metric-row:hover { background: rgba(255,255,255,.04); }
+.metric-row:last-child { border-bottom: none; }
+.metric-label { font-size: 12.5px; }
+.metric-value { font-size: 13px; }
+
+/* ── TABLES ───────────────────────────────────────────── */
+tbody tr { transition: background .12s; }
+tbody tr:hover { background: rgba(255,255,255,.04); }
+tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+tbody tr:nth-child(even):hover { background: rgba(255,255,255,.05); }
+th { letter-spacing: .4px; }
+
+/* ── STAT CARDS ───────────────────────────────────────── */
+.stat-card { position: relative; overflow: hidden; }
+.stat-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  opacity: 0;
+  transition: opacity .2s;
+  background: linear-gradient(135deg, rgba(88,166,255,.06), transparent);
+}
+.stat-card:hover::after { opacity: 1; }
+.stat-label { letter-spacing: .6px; }
+.stat-value { letter-spacing: -.3px; }
+
+/* ── COMPANY HEADER ───────────────────────────────────── */
+.company-header { border-left: 3px solid var(--accent); }
+.company-name { letter-spacing: -.3px; }
+.current-price { letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+.badge { transition: border-color .2s, color .2s; }
+.badge:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── SCORECARD ────────────────────────────────────────── */
+.score-circle { background: rgba(255,255,255,.02); }
+.score-circle .score-num { letter-spacing: -1px; }
+.verdict-badge { letter-spacing: .3px; }
+.signal-chip { transition: opacity .2s, transform .2s; }
+.signal-chip:hover { opacity: .85; transform: scale(1.04); }
+
+/* ── QUICK-PICKS ──────────────────────────────────────── */
+.qp-btn { transition: border-color .15s, color .15s, transform .15s; }
+.qp-btn:hover { transform: translateY(-2px); }
+.qp-btn:active { transform: translateY(0); }
+
+/* ── STICKY BAR — smooth fade in/out ─────────────────── */
+#stickyBar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s ease;
+  display: flex !important;   /* always in DOM, controlled by opacity */
+}
+#stickyBar.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+#stickyBar .sb-btn { transition: opacity .2s, transform .1s; }
+#stickyBar .sb-btn:hover { opacity: .85; transform: translateY(-1px); }
+
+/* ── NEWS ITEMS ───────────────────────────────────────── */
+.news-item { transition: background .15s; border-radius: 6px; padding: 10px 8px; margin: 0 -8px; }
+.news-item:hover { background: rgba(255,255,255,.04); }
+.news-headline a { transition: color .15s; }
+.news-img { transition: opacity .2s; }
+.news-img:hover { opacity: .9; }
+
+/* ── TABS ─────────────────────────────────────────────── */
+.tab { transition: background .18s, color .18s; }
+
+/* ── PIOTROSKI F-ITEMS ────────────────────────────────── */
+.f-item { transition: background .15s; }
+.f-item:hover { background: var(--bg); }
+
+/* ── DCF CONTROLS ─────────────────────────────────────── */
+.dcf-result { transition: background .2s; }
+.dcf-control input[type=range] { cursor: pointer; }
+
+/* ── LOADING SPINNER ──────────────────────────────────── */
+.spinner { box-shadow: 0 0 20px rgba(88,166,255,.2); }
+
+/* ── ERROR STATE ──────────────────────────────────────── */
+#error {
+  color: var(--text);
+  display: none;
+  text-align: center;
+  padding: 80px 20px;
+}
+#error h2 { font-size: 28px; font-weight: 800; color: var(--red); margin-bottom: 10px; }
+#error p  { color: var(--text2); font-size: 15px; max-width: 420px; margin: 0 auto; line-height: 1.6; }
+
+/* ── WATCHLIST ACTIVE STATE ───────────────────────────── */
+#watchlistBtn.active { color: var(--yellow) !important; border-color: var(--yellow) !important; }
+
+/* ── COMPARE BAR ──────────────────────────────────────── */
+#compareBar { animation: dropIn .18s ease; }
+
+/* ── SCROLLBAR ────────────────────────────────────────── */
+::-webkit-scrollbar-thumb { transition: background .2s; }
+::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+
+/* ── PEER TABLE ───────────────────────────────────────── */
+.peer-table-wrap { border-radius: 8px; overflow: hidden; }
+
+/* ── FOCUS ACCESSIBILITY ──────────────────────────────── */
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── REMOVE DEAD SECTIONS (kept in HTML/JS but hidden) ── */
+/* .estimate-row, .estimate-card, .compare-grid, .compare-header are unused */
+
+/* ── FONT NUMERIC TABULAR ──────────────────────────────── */
+.stat-value, .current-price, .metric-value, .score-num, .sb-price {
+  font-variant-numeric: tabular-nums;
+}

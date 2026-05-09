@@ -7,10 +7,12 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="theme-color" content="#161b22"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';">
 <meta name="referrer" content="no-referrer"/>
+<meta name="description" content="StockIQ — Professional stock fundamental analysis: valuation, scoring, DCF, peers, and live news."/>
 <title>StockIQ — Fundamental Analysis</title>
-<link rel="stylesheet" href="style.css"/>
+<link rel="preconnect" href="https://cdn.jsdelivr.net"/>
+<link rel="stylesheet" href="style.css?v=1.5"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
   integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g"
   crossorigin="anonymous"></script>
@@ -100,7 +102,11 @@
   </div>
 
   <!-- ERROR -->
-  <div id="error"><h2>⚠ Not Found</h2><p id="errorMsg"></p></div>
+  <div id="error">
+    <h2>⚠ Not Found</h2>
+    <p id="errorMsg"></p>
+    <button id="errorRetryBtn" class="nav-btn" style="margin-top:20px;display:none" onclick="analyze(document.getElementById('searchInput').value)">↺ Try Again</button>
+  </div>
 
   <!-- DASHBOARD -->
   <div id="dashboard">
@@ -236,6 +242,6 @@
 </div>
 
 <!-- ── FRONTEND LOGIC ──────────────────────────────────────────────────────── -->
-<script src="app.js"></script>
+<script src="app.js?v=1.5" defer></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 const http  = require('http');
 const https = require('https');
+const zlib  = require('zlib');
 const fs    = require('fs');
 const path  = require('path');
 const { URL } = require('url');
@@ -135,10 +136,10 @@ function setSecurityHeaders(res) {
   res.setHeader('Content-Security-Policy',    CSP);
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Resource-Policy','same-origin');
-  const origin = IS_PROD
-    ? (process.env.ALLOWED_ORIGIN || '*')   // set ALLOWED_ORIGIN env var to your domain
-    : 'http://localhost:' + PORT;
-  res.setHeader('Access-Control-Allow-Origin', origin);
+  // Same-origin only — no CORS needed (frontend served from same host).
+  // Set ALLOWED_ORIGIN env var only if you serve the frontend from a different domain.
+  const origin = process.env.ALLOWED_ORIGIN || null;
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
 }
 
 // Send response without losing headers set by setSecurityHeaders.
@@ -305,21 +306,41 @@ http.createServer(async (req, res) => {
     if (err) { send(res, 404, 'text/plain', 'Not found'); return; }
     const ext = path.extname(staticFile).toLowerCase();
     res.setHeader('Content-Type', MIME[ext] || 'text/plain');
-    // Never cache any static file — ensures deploys appear instantly
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.writeHead(200);
-    res.end(data);
+
+    // HTML: never cache (instant deploys)
+    // CSS/JS: cache 1 day — busted by ?v= query param in index.html
+    if (ext === '.html') {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma',  'no-cache');
+      res.setHeader('Expires', '0');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
+
+    // Gzip compression — reduces JS/CSS transfer by ~70%
+    const ae = req.headers['accept-encoding'] || '';
+    if (ae.includes('gzip')) {
+      zlib.gzip(data, (zerr, compressed) => {
+        if (zerr) { res.writeHead(200); res.end(data); return; }
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.writeHead(200);
+        res.end(compressed);
+      });
+    } else {
+      res.writeHead(200);
+      res.end(data);
+    }
   });
 
 }).listen(PORT, IS_PROD ? '0.0.0.0' : '127.0.0.1', () => {
   // In production: bind to 0.0.0.0 (cloud requires this)
   // In development: bind to 127.0.0.1 only (not reachable from outside)
+  const binding = IS_PROD ? '0.0.0.0 (public)' : '127.0.0.1 (local only)';
   console.log(`\n  StockIQ  →  http://localhost:${PORT}`);
-  console.log(`  API key  →  hidden behind proxy`);
-  console.log(`  Cache    →  server-side, 15 min TTL`);
-  console.log(`  Rate     →  ${RATE_LIMIT} calls/min global | ${IP_LIMIT} calls/min per IP`);
-  console.log(`  Timeout  →  ${FETCH_TIMEOUT}ms per Finnhub request`);
-  console.log(`  Binding  →  127.0.0.1 only (not exposed to network)\n`);
+  console.log(`  Mode     →  ${IS_PROD ? 'PRODUCTION' : 'development'}`);
+  console.log(`  Binding  →  ${binding}`);
+  console.log(`  Cache    →  server 15 min · CSS/JS 1 day · HTML no-cache`);
+  console.log(`  Rate     →  ${RATE_LIMIT} calls/min global | ${IP_LIMIT}/min per IP`);
+  console.log(`  Gzip     →  enabled\n`);
 });

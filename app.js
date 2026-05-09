@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -17,8 +17,9 @@ const APP_VERSION = '1.4';
 })();
 
 let priceChartInst = null;
-let currentData = {};
-let compareData  = {};
+let currentData    = {};
+let compareData    = {};
+let _activeTicker  = '';   // stale-request guard
 
 // ── UTILS ──────────────────────────────────────────────────────────────────────
 // Escape HTML to prevent XSS from API data inserted into DOM
@@ -149,9 +150,8 @@ function updateWatchlistBtn(ticker) {
   const btn = el('watchlistBtn');
   if (!btn) return;
   const inWl = getWatchlist().includes(ticker);
-  btn.textContent    = inWl ? '★ Watching' : '☆ Watchlist';
-  btn.style.color       = inWl ? 'var(--yellow)' : '';
-  btn.style.borderColor = inWl ? 'var(--yellow)' : '';
+  btn.textContent = inWl ? '★ Watching' : '☆ Watchlist';
+  btn.classList.toggle('active', inWl);   // CSS handles the yellow color
 }
 
 // ── SEARCH AUTOCOMPLETE ────────────────────────────────────────────────────────
@@ -172,6 +172,13 @@ el('searchBtn').addEventListener('click', () => {
   el('suggestions').style.display = 'none'; analyze(el('searchInput').value.trim().toUpperCase());
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-wrap')) el('suggestions').style.display = 'none'; });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    el('suggestions').style.display = 'none';
+    const wp = el('watchlistPanel');
+    if (wp && wp.style.display !== 'none') wp.style.display = 'none';
+  }
+});
 
 async function fetchSuggestions(q) {
   try {
@@ -193,10 +200,13 @@ function selectSug(sym) { el('searchInput').value = sym; el('suggestions').style
 // Total: ~10 calls vs ~18 before
 async function analyze(ticker) {
   if (!ticker) return;
-  ticker = ticker.toUpperCase();
+  ticker = ticker.toUpperCase().trim();
+  if (!ticker) return;
+  _activeTicker = ticker;                         // mark this as the active search
   el('searchInput').value = ticker;
   hide('landing'); hide('dashboard'); hide('error');
   el('loading').style.display = 'flex';
+  el('stickyBar')?.classList.remove('visible');   // hide sticky bar during load
   if (priceChartInst) { priceChartInst.destroy(); priceChartInst = null; }
   clearCompare();
 
@@ -256,12 +266,17 @@ async function analyze(ticker) {
 
   } catch (err) {
     hide('loading');
+    const retryBtn = el('errorRetryBtn');
     if (err.message === 'RATE_LIMIT') {
       el('errorMsg').textContent = 'Too many requests — please wait a moment and try again.';
-      toast('Rate limit hit — retrying automatically…', 'warn', 4000);
+      toast('Rate limit hit — retrying in 5 s…', 'warn', 4500);
+      if (retryBtn) retryBtn.style.display = 'none';
       setTimeout(() => analyze(ticker), 5000);
     } else {
-      el('errorMsg').textContent = err.message || 'Could not load data.';
+      el('errorMsg').textContent = err.message === 'Ticker not found'
+        ? `"${ticker}" was not found. Check the ticker symbol and try again.`
+        : (err.message || 'Could not load data. Please try again.');
+      if (retryBtn) retryBtn.style.display = '';
     }
     show('error');
   }
@@ -269,12 +284,14 @@ async function analyze(ticker) {
 
 // ── PHASE 2 LOADER (background, non-blocking) ─────────────────────────────────
 async function loadSecondaryData(ticker, profile, quote, metrics) {
+  const isActive = () => _activeTicker === ticker;   // abort if user started a new search
+
   try {
-    // 2 calls in parallel: news + insider sentiment
     const [sentiment, news] = await Promise.all([
       safeApi('/stock/insider-sentiment', { symbol: ticker, from: daysAgo(365), to: today() }),
       safeApi('/company-news',            { symbol: ticker, from: daysAgo(14),  to: today() }),
     ]);
+    if (!isActive()) return;
     currentData.sentiment = sentiment;
     currentData.news      = news;
     renderInsider(sentiment);
@@ -282,13 +299,13 @@ async function loadSecondaryData(ticker, profile, quote, metrics) {
   } catch {}
 
   try {
-    // 1 call: peers list
+    if (!isActive()) return;
     const peers = await safeApi('/stock/peers', { symbol: ticker });
+    if (!isActive()) return;
     currentData.peers = peers;
-    // peer details + sector share the remaining budget
-    renderSector(profile, quote);                          // 1 call (sector ETF only, no SPY)
-    renderPeers(peers, ticker, profile, metrics, quote);   // 3 peers × 1 call each = 3 calls
-    renderFinancials(ticker);                              // 1 call (financials)
+    renderSector(profile, quote, metrics);
+    renderPeers(peers, ticker, profile, metrics, quote);
+    renderFinancials(ticker, metrics);
   } catch {}
 }
 
@@ -366,12 +383,13 @@ function calcScores(m, rec, quote, earnings) {
   if (gn && quote.c < gn * 0.9)                               signals.push({ text:'Below Graham Number',      cls:'signal-green' });
   if (peg && peg < 1.5 && peg > 0 && rg > 10 && eg > 10)     signals.push({ text:'GARP ✓',                   cls:'signal-green' });
   if (pe > 0 && pe < 12 && rg < 0)                            signals.push({ text:'⚠ Value Trap Risk',        cls:'signal-red'   });
-  if (de > 3 && m.netProfitMarginTTM < 5)                     signals.push({ text:'⚠ High Debt + Low Margin', cls:'signal-red'   });
-  if (rg > 15)                                                 signals.push({ text:'High Revenue Growth',      cls:'signal-green' });
-  if (eg > 20)                                                 signals.push({ text:'Strong EPS Growth',        cls:'signal-green' });
+  if (de != null && de > 3 && m.netProfitMarginTTM != null && m.netProfitMarginTTM < 5)
+                                                               signals.push({ text:'⚠ High Debt + Low Margin', cls:'signal-red'   });
+  if (rg != null && rg > 15)                                   signals.push({ text:'High Revenue Growth',      cls:'signal-green' });
+  if (eg != null && eg > 20)                                   signals.push({ text:'Strong EPS Growth',        cls:'signal-green' });
   if (peg && peg < 1 && peg > 0)                              signals.push({ text:'PEG < 1',                  cls:'signal-green' });
-  if (m.roeTTM > 30)                                           signals.push({ text:'High ROE',                 cls:'signal-green' });
-  if (de > 2)                                                  signals.push({ text:'High Leverage',            cls:'signal-yellow'});
+  if (m.roeTTM != null && m.roeTTM > 30)                      signals.push({ text:'High ROE',                 cls:'signal-green' });
+  if (de != null && de > 2)                                    signals.push({ text:'High Leverage',            cls:'signal-yellow'});
   if (quote.dp < -3)                                           signals.push({ text:'Falling Today',            cls:'signal-red'   });
 
   const verdict = total >= 80 ? { label:'Strong Buy', color:'var(--green)' } :
@@ -552,7 +570,7 @@ function renderDCF(m, profile, quote) {
   const rev              = m.revenuePerShareTTM && profile.shareOutstanding ? m.revenuePerShareTTM * profile.shareOutstanding * 1e6 : null;
   const fcfMarginDefault = m.netProfitMarginTTM || 15;
   const growthDefault    = Math.min(30, Math.max(-5, m.revenueGrowthTTMYoy || 10));
-  const shares           = profile.shareOutstanding * 1e6 || null;
+  const shares           = profile.shareOutstanding > 0 ? profile.shareOutstanding * 1e6 : null;
 
   if (!rev || !shares) { el('dcfContent').innerHTML='<p style="color:var(--text2);font-size:13px">Insufficient data for DCF.</p>'; return; }
 
@@ -586,14 +604,16 @@ function renderDCF(m, profile, quote) {
 }
 
 function updateDCF() {
-  const growth = parseFloat(el('dcfGrowth')?.value || 10) / 100;
-  const margin = parseFloat(el('dcfMargin')?.value || 15) / 100;
-  const disc   = parseFloat(el('dcfDisc')?.value   || 10) / 100;
-  const term   = parseFloat(el('dcfTerm')?.value   || 3)  / 100;
-  el('dcfGrowthVal').textContent = (growth*100).toFixed(0) + '%';
-  el('dcfMarginVal').textContent = (margin*100).toFixed(0) + '%';
-  el('dcfDiscVal').textContent   = (disc*100).toFixed(0)   + '%';
-  el('dcfTermVal').textContent   = (term*100).toFixed(0)   + '%';
+  // Guard: elements only exist after renderDCF has inserted them
+  if (!el('dcfGrowth')) return;
+  const growth = parseFloat(el('dcfGrowth').value || 10) / 100;
+  const margin = parseFloat(el('dcfMargin').value || 15) / 100;
+  const disc   = parseFloat(el('dcfDisc').value   || 10) / 100;
+  const term   = parseFloat(el('dcfTerm').value   || 3)  / 100;
+  if (el('dcfGrowthVal')) el('dcfGrowthVal').textContent = (growth*100).toFixed(0) + '%';
+  if (el('dcfMarginVal')) el('dcfMarginVal').textContent = (margin*100).toFixed(0) + '%';
+  if (el('dcfDiscVal'))   el('dcfDiscVal').textContent   = (disc*100).toFixed(0)   + '%';
+  if (el('dcfTermVal'))   el('dcfTermVal').textContent   = (term*100).toFixed(0)   + '%';
   const rev = window._dcfRev, shares = window._dcfShares, curr = window._dcfCurr;
   if (!rev || !shares) return;
   let pv = 0, baseFCF = rev * margin;
@@ -805,14 +825,14 @@ function renderInsider(data) {
 }
 
 // ── SECTOR & RELATIVE STRENGTH ────────────────────────────────────────────────
-async function renderSector(profile, quote) {
+async function renderSector(profile, quote, metrics) {
   const industry  = profile.finnhubIndustry || '';
   const sectorETF = Object.entries(SECTOR_ETFS).find(([k]) => industry.toLowerCase().includes(k.toLowerCase()))?.[1] || null;
 
   let html = `<div class="metric-row"><span class="metric-label">Industry</span><span class="metric-value">${profile.finnhubIndustry||'N/A'}</span></div>`;
   html    += `<div class="metric-row"><span class="metric-label">Today's Change</span><span class="metric-value" style="${clr(quote.dp)}">${quote.dp>=0?'+':''}${fmtPct(quote.dp)}</span></div>`;
 
-  const m  = currentData.metrics?.metric || {};
+  const m  = (metrics || currentData.metrics)?.metric || {};
   const hi = m['52WeekHigh'], lo = m['52WeekLow'];
   if (hi && lo) {
     const pos = ((quote.c-lo)/(hi-lo)*100).toFixed(1);
@@ -841,14 +861,13 @@ async function renderSector(profile, quote) {
 async function renderPeers(peers, ticker, profile, metrics, quote) {
   if (!peers || !peers.length) { el('peerContent').innerHTML='<p style="color:var(--text2);font-size:13px">No peer data available.</p>'; return; }
 
-  // 3 peers max, each needs 1 call (metric only — price comes from metric's own data)
   const peerList = peers.filter(p => p !== ticker).slice(0, 3);
   try {
     const peerData = await Promise.all(peerList.map(async p => {
-      // Single call per peer: metric contains enough data (saves quote call per peer)
-      const pm = await safeApi('/stock/metric', { symbol: p, metric: 'all' });
-      // Derive a rough "current price" from metric's regularMarketPrice if available
-      const pq = pm?.metric ? { c: pm.metric.regularMarketPrice || null, dp: null } : { c: null, dp: null };
+      const [pq, pm] = await Promise.all([
+        safeApi('/quote',          { symbol: p }),
+        safeApi('/stock/metric',   { symbol: p, metric: 'all' }),
+      ]);
       return { symbol: p, quote: pq, metrics: pm };
     }));
 
@@ -888,12 +907,11 @@ async function renderPeers(peers, ticker, profile, metrics, quote) {
 }
 
 // ── FINANCIAL STATEMENTS ──────────────────────────────────────────────────────
-async function renderFinancials(ticker) {
+async function renderFinancials(ticker, metrics) {
   try {
     const data = await safeApi('/stock/financials-reported', { symbol:ticker, freq:'annual' });
     if (!data || !data.data || !data.data.length) {
-      // Fallback: build metric-derived tables from already-loaded /stock/metric data
-      renderFinancialsFromMetrics();
+      renderFinancialsFromMetrics(metrics);
       return;
     }
     const reports = data.data.slice(0, 4);
@@ -949,13 +967,13 @@ async function renderFinancials(ticker) {
     }).join('');
     el('cashflowPanel').innerHTML = cfTable.replace('</tbody>', `<tr><td>Free Cash Flow</td>${freeCFRow}</tr></tbody>`);
   } catch {
-    renderFinancialsFromMetrics();
+    renderFinancialsFromMetrics(metrics);
   }
 }
 
 // ── FINANCIALS FALLBACK (built from /stock/metric — no extra API call) ────────
-function renderFinancialsFromMetrics() {
-  const m = currentData.metrics?.metric || {};
+function renderFinancialsFromMetrics(metrics) {
+  const m = (metrics || currentData.metrics)?.metric || {};
   const g = v => { if (v==null||isNaN(v)) return '<span style="color:var(--text2)">—</span>'; const c=v>0?'var(--green)':'var(--red)'; return `<span style="color:${c}">${v>0?'+':''}${fmtPct(v)}</span>`; };
   const r = (label, value) => `<div class="metric-row"><span class="metric-label">${label}</span><span class="metric-value">${value}</span></div>`;
   const note = '<div style="font-size:11px;color:var(--text2);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">Based on TTM / annual metrics · Full XBRL statements require Finnhub premium</div>';
@@ -1130,19 +1148,20 @@ function updateStickyBar(profile, quote) {
   if (!profile || !quote) return;
   const change = quote.d || 0, pct = quote.dp || 0;
   const dir    = change >= 0;
-  el('sbTicker').textContent = profile.ticker || '';
-  el('sbName').textContent   = profile.name   || '';
-  el('sbPrice').textContent  = '$' + fmtNum(quote.c);
-  el('sbChg').textContent    = (dir?'+':'') + fmtNum(change) + ' (' + fmtPct(pct) + ')';
-  el('sbChg').style.color    = dir ? 'var(--green)' : 'var(--red)';
+  if (el('sbTicker')) el('sbTicker').textContent = profile.ticker || '';
+  if (el('sbName'))   el('sbName').textContent   = profile.name   || '';
+  if (el('sbPrice'))  el('sbPrice').textContent  = '$' + fmtNum(quote.c);
+  if (el('sbChg'))  { el('sbChg').textContent    = (dir?'+':'') + fmtNum(change) + ' (' + fmtPct(pct) + ')';
+                      el('sbChg').style.color     = dir ? 'var(--green)' : 'var(--red)'; }
 }
 
 window.addEventListener('scroll', () => {
   const bar = el('stickyBar');
   if (!bar) return;
-  const companyHeader = el('companyHeader');
-  if (!companyHeader || !currentData.profile) { bar.style.display='none'; return; }
-  bar.style.display = companyHeader.getBoundingClientRect().bottom < 0 ? 'flex' : 'none';
+  const header = el('companyHeader');
+  // Sticky bar uses opacity+pointer-events (CSS .visible class) for smooth fade
+  if (!header || !currentData.profile) { bar.classList.remove('visible'); return; }
+  bar.classList.toggle('visible', header.getBoundingClientRect().bottom < 0);
 }, { passive:true });
 
 // ── DCF PREFERENCES ───────────────────────────────────────────────────────────
@@ -1183,9 +1202,10 @@ function updateBottomBar(ticker) {
   if (icon) icon.textContent = inWl ? '★' : '☆';
 }
 
+// CSS media query handles bottomBar show/hide on resize — no JS needed.
+// We only update the button states inside the bar when screen size changes.
 window.addEventListener('resize', () => {
-  const bar = el('bottomBar');
-  if (bar) bar.style.display = window.innerWidth <= 600 ? 'flex' : 'none';
+  if (currentData.ticker) updateBottomBar(currentData.ticker);
 }, { passive:true });
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
