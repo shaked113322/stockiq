@@ -183,7 +183,7 @@ const CSP = [
   "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
-  "connect-src 'self'",
+  "connect-src 'self' https://cdn.jsdelivr.net",
   "font-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",

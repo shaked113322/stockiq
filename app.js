@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -1556,17 +1556,21 @@ async function loadScreener(force = false) {
     </p>
   </div>`;
 
-  const symStr = SCREENER_TICKERS.join(',');
-
-  // ── Step 1: 2 FMP calls — instant price/PE/sector data ───────────────────
-  const [fmpQuotes, fmpProfiles] = await Promise.all([
-    safeFmp('/v3/quote/'   + symStr),   // price, change%, marketCap, P/E
-    safeFmp('/v3/profile/' + symStr),   // name, sector, industry
-  ]);
-
+  // ── Step 1: FMP in batches of 20 (free tier URL length limit) ────────────
+  // Fetches price, change%, marketCap, P/E (quotes) + name, sector (profiles)
+  const FMP_BATCH = 20;
   const qMap = {}, pMap = {};
-  (fmpQuotes   || []).forEach(q => qMap[q.symbol] = q);
-  (fmpProfiles || []).forEach(p => pMap[p.symbol] = p);
+
+  for (let i = 0; i < SCREENER_TICKERS.length; i += FMP_BATCH) {
+    const batch  = SCREENER_TICKERS.slice(i, i + FMP_BATCH);
+    const symStr = batch.join(',');
+    const [fmpQuotes, fmpProfiles] = await Promise.all([
+      safeFmp('/v3/quote/'   + symStr),
+      safeFmp('/v3/profile/' + symStr),
+    ]);
+    (fmpQuotes   || []).forEach(q => qMap[q.symbol] = q);
+    (fmpProfiles || []).forEach(p => pMap[p.symbol] = p);
+  }
 
   // Build initial data with FMP only (ROE/margins will be null initially)
   _screenerData = SCREENER_TICKERS.map(ticker => {
@@ -1695,7 +1699,6 @@ function renderScreenerTable() {
   const wrap = el('screenerTableWrap');
 
   if (!data.length) {
-    _screenerObserver?.disconnect();
     wrap.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text2)">No stocks match your filters.</div>';
     return;
   }
