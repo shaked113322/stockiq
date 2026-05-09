@@ -52,9 +52,9 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // _ep is injected by the vercel.json rewrite: /api/:path* → /api/proxy?_ep=:path*
+  // _ep holds the Finnhub path; URLSearchParams encodes '/' as '%2F' so decode it.
   const { _ep, ...queryParams } = req.query;
-  const endpoint = '/' + (_ep || '');
+  const endpoint = '/' + decodeURIComponent(_ep || '');
 
   if (!ALLOWED_ENDPOINTS.some(a => endpoint.startsWith(a))) {
     return res.status(400).json({ error: 'Endpoint not allowed', endpoint });
