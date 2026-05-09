@@ -8,11 +8,26 @@ const { URL } = require('url');
 const PORT        = process.env.PORT || 3000;
 const IS_PROD     = !!process.env.PORT;  // true when running on cloud
 const ROOT        = path.resolve(__dirname);
-const FINNHUB_KEY = process.env.FINNHUB_KEY || 'd7993ehr01qqpmhft4lgd7993ehr01qqpmhft4m0';
+// ── API KEYS ──────────────────────────────────────────────────────────────────
+// Finnhub: rotate between multiple keys to double the rate limit
+const FINNHUB_KEYS = [
+  process.env.FINNHUB_KEY  || 'd7993ehr01qqpmhft4lgd7993ehr01qqpmhft4m0',
+  process.env.FINNHUB_KEY2 || 'd7vj9f9r01qj3ct79jt0d7vj9f9r01qj3ct79jtg',
+].filter(Boolean);
+let _fhKeyIdx = 0;
+function nextFinnhubKey() {
+  const k = FINNHUB_KEYS[_fhKeyIdx % FINNHUB_KEYS.length];
+  _fhKeyIdx++;
+  return k;
+}
+
+const FMP_KEY = process.env.FMP_KEY || 'S2Drh1uHQ0wOZLBrjiXscgUhEEaFIET3';
+const TD_KEY  = process.env.TD_KEY  || '69fa95071268401e8cd3944271600609';
+
 const CACHE_TTL   = 15 * 60 * 1000;   // 15 minutes
-const RATE_LIMIT  = 55;               // global calls/min to Finnhub
-const IP_LIMIT    = 45;               // calls/min per single IP (one full analysis ≈ 20-25 calls)
-const FETCH_TIMEOUT = 8000;           // ms before Finnhub request is aborted
+const RATE_LIMIT  = 110;              // global calls/min to Finnhub (2 keys × 55)
+const IP_LIMIT    = 80;               // calls/min per single IP
+const FETCH_TIMEOUT = 8000;           // ms before upstream request is aborted
 
 // ── SERVER-SIDE CACHE ─────────────────────────────────────────────
 const cache = new Map();
@@ -91,7 +106,7 @@ setInterval(() => {
 function finnhubFetch(endpoint, params) {
   const qs = Object.entries(params)
     .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
-  const reqUrl = `https://finnhub.io/api/v1${endpoint}?${qs}&token=${FINNHUB_KEY}`;
+  const reqUrl = `https://finnhub.io/api/v1${endpoint}?${qs}&token=${nextFinnhubKey()}`;
 
   return new Promise((resolve, reject) => {
     const req = https.get(reqUrl, res => {
@@ -110,6 +125,55 @@ function finnhubFetch(endpoint, params) {
     });
     req.on('error', reject);
     req.setTimeout(FETCH_TIMEOUT, () => { req.destroy(); reject(new Error('Finnhub timeout')); });
+  });
+}
+
+// ── FMP FETCH ─────────────────────────────────────────────────────
+// endpoint like '/v3/quote/AAPL,MSFT' — symbols embedded in path
+function fmpFetch(endpoint, params) {
+  const qs = Object.entries(params)
+    .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+  const sep = qs ? '?' : '?';
+  const reqUrl = `https://financialmodelingprep.com/api${endpoint}${sep}${qs}&apikey=${FMP_KEY}`;
+  return new Promise((resolve, reject) => {
+    const req = https.get(reqUrl, res => {
+      let size = 0, body = '';
+      res.on('data', chunk => {
+        size += chunk.length;
+        if (size > 4 * 1024 * 1024) { req.destroy(); return reject(new Error('FMP response too large')); }
+        body += chunk;
+      });
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(body) }); }
+        catch { resolve({ status: res.statusCode, data: {} }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(FETCH_TIMEOUT, () => { req.destroy(); reject(new Error('FMP timeout')); });
+  });
+}
+
+// ── TWELVE DATA FETCH ─────────────────────────────────────────────
+// endpoint like '/quote', params include symbol (comma-separated)
+function tdFetch(endpoint, params) {
+  const qs = Object.entries(params)
+    .map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+  const reqUrl = `https://api.twelvedata.com${endpoint}?${qs}&apikey=${TD_KEY}`;
+  return new Promise((resolve, reject) => {
+    const req = https.get(reqUrl, res => {
+      let size = 0, body = '';
+      res.on('data', chunk => {
+        size += chunk.length;
+        if (size > 2 * 1024 * 1024) { req.destroy(); return reject(new Error('TD response too large')); }
+        body += chunk;
+      });
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(body) }); }
+        catch { resolve({ status: res.statusCode, data: {} }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(FETCH_TIMEOUT, () => { req.destroy(); reject(new Error('TD timeout')); });
   });
 }
 
@@ -235,6 +299,64 @@ http.createServer(async (req, res) => {
       return;
     }
 
+    // ── FMP PROXY ────────────────────────────────────────────────
+    if (pathname === '/api/fmp') {
+      const rawEp  = decodeURIComponent(parsed.searchParams.get('_ep') || '');
+      const fmpEp  = '/' + rawEp;
+      const FMP_ALLOWED = ['/v3/quote/', '/v3/profile/', '/v3/stock-screener'];
+      if (!FMP_ALLOWED.some(a => fmpEp.startsWith(a))) {
+        sendJson(res, 400, { error: 'FMP endpoint not allowed' }); return;
+      }
+      // validate symbols embedded in path (batch endpoints)
+      if (fmpEp.startsWith('/v3/quote/') || fmpEp.startsWith('/v3/profile/')) {
+        const syms = fmpEp.split('/').pop();
+        if (!syms || !/^[A-Z0-9,]{1,600}$/.test(syms)) {
+          sendJson(res, 400, { error: 'Invalid symbols in FMP path' }); return;
+        }
+      }
+      const fmpParams = {};
+      for (const [k, v] of parsed.searchParams) {
+        if (k === '_ep' || k === 'apikey') continue;
+        fmpParams[k] = String(v).slice(0, 200);
+      }
+      const fmpKey    = cacheKey('fmp:' + fmpEp, fmpParams);
+      const fmpCached = cacheGet(fmpKey);
+      if (fmpCached) { cacheHits++; sendJson(res, 200, fmpCached, { 'X-Cache': 'HIT' }); return; }
+      try {
+        const result = await fmpFetch(fmpEp, fmpParams);
+        if (result.status === 200) cacheSet(fmpKey, result.data);
+        sendJson(res, result.status, result.data, { 'X-Cache': 'MISS' });
+      } catch { sendJson(res, 502, { error: 'FMP upstream unavailable' }); }
+      return;
+    }
+
+    // ── TWELVE DATA PROXY ─────────────────────────────────────────
+    if (pathname === '/api/td') {
+      const rawEp = decodeURIComponent(parsed.searchParams.get('_ep') || '');
+      const tdEp  = '/' + rawEp;
+      const TD_ALLOWED = ['/quote', '/price', '/eod'];
+      if (!TD_ALLOWED.some(a => tdEp === a || tdEp.startsWith(a + '/'))) {
+        sendJson(res, 400, { error: 'TD endpoint not allowed' }); return;
+      }
+      const tdParams = {};
+      for (const [k, v] of parsed.searchParams) {
+        if (k === '_ep' || k === 'apikey') continue;
+        const sv = String(v).slice(0, 500);
+        // validate symbol param: only uppercase, digits, commas (batch)
+        if (k === 'symbol' && !/^[A-Z0-9,]{1,400}$/.test(sv)) continue;
+        tdParams[k] = sv;
+      }
+      const tdKey    = cacheKey('td:' + tdEp, tdParams);
+      const tdCached = cacheGet(tdKey);
+      if (tdCached) { cacheHits++; sendJson(res, 200, tdCached, { 'X-Cache': 'HIT' }); return; }
+      try {
+        const result = await tdFetch(tdEp, tdParams);
+        if (result.status === 200) cacheSet(tdKey, result.data);
+        sendJson(res, result.status, result.data, { 'X-Cache': 'MISS' });
+      } catch { sendJson(res, 502, { error: 'TD upstream unavailable' }); }
+      return;
+    }
+
     // Validate endpoint against allowlist.
     // Supports both legacy /api/<path> and new /api/proxy?_ep=<path> (Vercel-friendly).
     let endpoint;
@@ -350,6 +472,7 @@ http.createServer(async (req, res) => {
   console.log(`  Mode     →  ${IS_PROD ? 'PRODUCTION' : 'development'}`);
   console.log(`  Binding  →  ${binding}`);
   console.log(`  Cache    →  server 15 min · CSS/JS 1 day · HTML no-cache`);
-  console.log(`  Rate     →  ${RATE_LIMIT} calls/min global | ${IP_LIMIT}/min per IP`);
+  console.log(`  Rate     →  ${RATE_LIMIT} calls/min Finnhub (${FINNHUB_KEYS.length} keys) | ${IP_LIMIT}/min per IP`);
+  console.log(`  APIs     →  Finnhub ×${FINNHUB_KEYS.length} · FMP · Twelve Data`);
   console.log(`  Gzip     →  enabled\n`);
 });

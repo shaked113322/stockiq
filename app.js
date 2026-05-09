@@ -128,6 +128,28 @@ async function api(endpoint, params = {}, retries = 2) {
 }
 async function safeApi(endpoint, params = {}) { try { return await api(endpoint, params); } catch { return null; } }
 
+// ── FMP (Financial Modeling Prep) ─────────────────────────────────────────────
+// Used for bulk screener data: 2 calls = 40 stocks vs 120 Finnhub calls
+async function apiFmp(ep, params = {}) {
+  const e  = ep.replace(/^\//, '');
+  const qs = new URLSearchParams({ _ep: e, ...params }).toString();
+  const r  = await fetch('/api/fmp?' + qs);
+  if (!r.ok) throw new Error(`FMP HTTP ${r.status}`);
+  return r.json();
+}
+async function safeFmp(ep, params = {}) { try { return await apiFmp(ep, params); } catch { return null; } }
+
+// ── Twelve Data ────────────────────────────────────────────────────────────────
+// Used for market page: 1 batch call = quotes for all indices + sectors
+async function apiTd(ep, params = {}) {
+  const e  = ep.replace(/^\//, '');
+  const qs = new URLSearchParams({ _ep: e, ...params }).toString();
+  const r  = await fetch('/api/td?' + qs);
+  if (!r.ok) throw new Error(`TD HTTP ${r.status}`);
+  return r.json();
+}
+async function safeTd(ep, params = {}) { try { return await apiTd(ep, params); } catch { return null; } }
+
 // ── TOAST NOTIFICATIONS ────────────────────────────────────────────────────────
 function toast(msg, type = 'info', dur = 3000) {
   let container = document.getElementById('toastContainer');
@@ -1498,29 +1520,71 @@ async function loadScreener(force = false) {
   _screenerData   = [];
 
   const wrap = el('screenerTableWrap');
-  wrap.innerHTML = `<div style="padding:40px;text-align:center">
-    <div class="spinner"></div>
-    <p id="screenerProgress" style="color:var(--text2);margin-top:14px">
-      Loading <strong>0 / ${SCREENER_TICKERS.length}</strong> stocks…
-    </p></div>`;
+  const setProgress = txt => {
+    wrap.innerHTML = `<div style="padding:40px;text-align:center">
+      <div class="spinner"></div>
+      <p style="color:var(--text2);margin-top:14px">${txt}</p>
+    </div>`;
+  };
+  setProgress('Loading prices &amp; market caps… <small style="color:var(--text2)">(FMP)</small>');
 
+  const symStr = SCREENER_TICKERS.join(',');
+
+  // ── Step 1: 2 FMP calls instead of 120 Finnhub calls ─────────────────────
+  const [fmpQuotes, fmpProfiles] = await Promise.all([
+    safeFmp('/v3/quote/' + symStr),       // price, change%, marketCap, P/E, EPS
+    safeFmp('/v3/profile/' + symStr),     // name, sector, industry
+  ]);
+
+  // Build lookup maps
+  const qMap = {}, pMap = {};
+  (fmpQuotes   || []).forEach(q => qMap[q.symbol] = q);
+  (fmpProfiles || []).forEach(p => pMap[p.symbol] = p);
+
+  // ── Step 2: Finnhub metrics in batches — ROE, margins, growth ────────────
+  setProgress('Loading profitability &amp; growth metrics… <small style="color:var(--text2)">(Finnhub)</small>');
   const BATCH = 5;
+  const mMap  = {};
   for (let i = 0; i < SCREENER_TICKERS.length; i += BATCH) {
-    const batch = SCREENER_TICKERS.slice(i, i + BATCH);
+    const batch   = SCREENER_TICKERS.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(async ticker => {
-      try {
-        const [q, m, p] = await Promise.all([
-          safeApi('/quote',            { symbol: ticker }),
-          safeApi('/stock/metric',     { symbol: ticker, metric: 'all' }),
-          safeApi('/stock/profile2',   { symbol: ticker }),
-        ]);
-        return { ticker, q: q||{}, m: m?.metric||{}, p: p||{} };
-      } catch { return null; }
+      const m = await safeApi('/stock/metric', { symbol: ticker, metric: 'all' });
+      return { ticker, m: m?.metric || {} };
     }));
-    _screenerData.push(...results.filter(Boolean));
-    const prog = el('screenerProgress');
-    if (prog) prog.innerHTML = `Loading <strong>${Math.min(i+BATCH, SCREENER_TICKERS.length)} / ${SCREENER_TICKERS.length}</strong> stocks…`;
+    results.forEach(r => { mMap[r.ticker] = r.m; });
   }
+
+  // ── Step 3: Assemble unified data ────────────────────────────────────────
+  _screenerData = SCREENER_TICKERS.map(ticker => {
+    const fq = qMap[ticker] || {};
+    const fp = pMap[ticker] || {};
+    const m  = mMap[ticker] || {};
+    return {
+      ticker,
+      q: {
+        c:  fq.price             || 0,
+        dp: fq.changesPercentage || 0,
+        d:  fq.change            || 0,
+      },
+      m: {
+        // FMP gives us a better real-time P/E; Finnhub fills the rest
+        peBasicExclExtraTTM:          fq.pe ?? m.peBasicExclExtraTTM,
+        revenueGrowthTTMYoy:          m.revenueGrowthTTMYoy,
+        netProfitMarginTTM:           m.netProfitMarginTTM,
+        roeTTM:                       m.roeTTM,
+        dividendYieldIndicatedAnnual: m.dividendYieldIndicatedAnnual ?? (fq.lastAnnualDividend && fq.price ? (fq.lastAnnualDividend / fq.price * 100) : null),
+        // keep full Finnhub metrics available for filtering/sorting
+        ...m,
+        peBasicExclExtraTTM: fq.pe ?? m.peBasicExclExtraTTM,
+      },
+      p: {
+        name:                 fp.companyName  || ticker,
+        finnhubIndustry:      fp.industry     || fp.sector || '',
+        // FMP marketCap is in raw dollars; Finnhub metric is in millions → normalise to millions
+        marketCapitalization: fq.marketCap ? fq.marketCap / 1e6 : (m['marketCapitalization'] || 0),
+      },
+    };
+  }).filter(d => d.q.c > 0);
 
   _screenerLoaded = true;
   applyScreenerFilters();
@@ -1680,21 +1744,50 @@ async function loadMarket() {
     <p style="color:var(--text2);margin-top:14px">Loading market data…</p>
   </div>`;
 
-  const allSyms = [
+  const allSyms = [...new Set([
     ...MKT_INDICES.map(x => x.sym),
     ...MKT_SECTORS.map(x => x.sym),
     ...MKT_MOVERS,
-  ];
+  ])];
 
-  // Fetch all quotes in parallel
-  await Promise.all([...new Set(allSyms)].map(async sym => {
-    const q = await safeApi('/quote', { symbol: sym });
-    if (q) _marketQuotes[sym] = q;
-  }));
+  // ── Twelve Data: 1 batch call for ALL symbols ─────────────────────────────
+  // free tier: 800 calls/day — 1 batch call covers all 30 symbols
+  const tdData = await safeTd('/quote', { symbol: allSyms.join(',') });
 
-  // Fetch upcoming earnings (next 7 days)
+  if (tdData && typeof tdData === 'object') {
+    // Multi-symbol response: { SYMBOL: { close, percent_change, ... }, ... }
+    // Single-symbol response (fallback): { close, percent_change, ... }
+    const isMulti = tdData[allSyms[0]] !== undefined;
+    const entries = isMulti ? Object.entries(tdData) : [[allSyms[0], tdData]];
+
+    entries.forEach(([sym, d]) => {
+      if (!d || d.status === 'error') return;
+      const close = parseFloat(d.close);
+      const prev  = parseFloat(d.previous_close);
+      if (isNaN(close)) return;
+      _marketQuotes[sym] = {
+        c:  close,
+        dp: parseFloat(d.percent_change) || (prev ? (close - prev) / prev * 100 : 0),
+        d:  parseFloat(d.change)         || (close - prev),
+        h:  parseFloat(d.high)           || close,
+        l:  parseFloat(d.low)            || close,
+        pc: prev                         || close,
+      };
+    });
+  }
+
+  // ── Fallback: Finnhub for any symbols Twelve Data missed ─────────────────
+  const missing = allSyms.filter(s => !_marketQuotes[s]);
+  if (missing.length) {
+    await Promise.all(missing.map(async sym => {
+      const q = await safeApi('/quote', { symbol: sym });
+      if (q && q.c) _marketQuotes[sym] = q;
+    }));
+  }
+
+  // ── Earnings calendar (Finnhub, 1 call) ──────────────────────────────────
   const fromDate = today();
-  const toDate   = daysAgo(-7);   // negative = future
+  const toDate   = daysAgo(-7);   // negative = 7 days into the future
   _marketEarnData = await safeApi('/stock/earnings-calendar', { from: fromDate, to: toDate });
 
   _marketLoaded = true;
