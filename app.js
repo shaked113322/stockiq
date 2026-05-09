@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
 
 // Clear localStorage cache if app version changed
 (()=>{
