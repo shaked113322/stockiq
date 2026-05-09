@@ -52,9 +52,13 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // _ep holds the Finnhub path; URLSearchParams encodes '/' as '%2F' so decode it.
-  const { _ep, ...queryParams } = req.query;
-  const endpoint = '/' + decodeURIComponent(_ep || '');
+  // Parse query params directly from the URL (req.query may not be populated in all runtimes)
+  const rawUrl   = req.url || '';
+  const qIdx     = rawUrl.indexOf('?');
+  const qString  = qIdx >= 0 ? rawUrl.slice(qIdx + 1) : '';
+  const sp       = new URLSearchParams(qString);
+  const _ep      = sp.get('_ep') || '';
+  const endpoint = '/' + decodeURIComponent(_ep);
 
   if (!ALLOWED_ENDPOINTS.some(a => endpoint.startsWith(a))) {
     return res.status(400).json({ error: 'Endpoint not allowed', endpoint });
@@ -63,8 +67,8 @@ module.exports = async function handler(req, res) {
   // Sanitize — only known keys, no token, safe characters only
   const params = {};
   let n = 0;
-  for (const [k, v] of Object.entries(queryParams)) {
-    if (k === 'token') continue;
+  for (const [k, v] of sp.entries()) {
+    if (k === '_ep' || k === 'token') continue;
     if (!ALLOWED_PARAM_KEYS.has(k)) continue;
     if (n++ > 8) break;
     const sv = String(v).slice(0, 64);
