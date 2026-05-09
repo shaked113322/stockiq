@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api';
-const APP_VERSION = '2.3';
+const APP_VERSION = '2.4';
 
 // Clear localStorage cache if app version changed
 (()=>{
@@ -1614,14 +1614,21 @@ const SCREENER_META = {
 
 const SCREENER_TICKERS = Object.keys(SCREENER_META);
 
+// Small sleep helper for throttling
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Track ongoing metric fetch to prevent duplicate loads
+let _screenerMetricRunning = false;
+
 async function loadScreener(force = false) {
   if (_screenerLoaded && !force) return;
 
   // Reset state
-  _screenerLoaded    = false;
-  _screenerData      = [];
-  _screenerFiltered  = [];
-  _screenerDisplayed = 20;
+  _screenerLoaded          = false;
+  _screenerMetricRunning   = false;
+  _screenerData            = [];
+  _screenerFiltered        = [];
+  _screenerDisplayed       = 20;
 
   const wrap = el('screenerTableWrap');
   wrap.innerHTML = `<div style="padding:40px;text-align:center">
@@ -1631,73 +1638,101 @@ async function loadScreener(force = false) {
     </p>
   </div>`;
 
-  // ── Step 1: Finnhub quote in batches of 5 — show table as soon as 1st batch done ──
-  // Each batch: /quote (1 call) — price, change%, no separate profile needed (SCREENER_META)
-  const BATCH = 5;
-  let firstBatchDone = false;
+  // ── Step 1: Twelve Data batch quote — 1 call for ALL tickers ─────────────
+  // TD free tier handles multi-symbol in one request; zero Finnhub calls here.
+  // Split into 2 TD requests to stay well within URL/response limits.
+  const mid     = Math.ceil(SCREENER_TICKERS.length / 2);
+  const chunk1  = SCREENER_TICKERS.slice(0, mid);
+  const chunk2  = SCREENER_TICKERS.slice(mid);
 
-  for (let i = 0; i < SCREENER_TICKERS.length; i += BATCH) {
-    const batch = SCREENER_TICKERS.slice(i, i + BATCH);
-    const quotes = await Promise.all(
-      batch.map(ticker => safeApi('/quote', { symbol: ticker }))
-    );
+  const [td1, td2] = await Promise.all([
+    safeTd('/quote', { symbol: chunk1.join(',') }),
+    safeTd('/quote', { symbol: chunk2.join(',') }),
+  ]);
 
-    batch.forEach((ticker, idx) => {
-      const q   = quotes[idx] || {};
-      const meta = SCREENER_META[ticker] || { name: ticker, sector: '' };
-      const existing = _screenerData.find(d => d.ticker === ticker);
-      if (existing) {
-        // Update price data if already in array
-        existing.q = { c: q.c || 0, dp: q.dp || 0, d: q.d || 0 };
-      } else {
-        _screenerData.push({
-          ticker,
-          q: { c: q.c || 0, dp: q.dp || 0, d: q.d || 0 },
-          m: {},
-          p: {
-            name:                 meta.name,
-            finnhubIndustry:      meta.sector,
-            marketCapitalization: 0,   // filled in from metrics below
-          },
-        });
-      }
-    });
+  // Parse TD multi-symbol response: { TICKER: { close, percent_change, ... } }
+  function parseTdResponse(tdData, tickers) {
+    if (!tdData || typeof tdData !== 'object') return {};
+    const isMulti = tickers.length > 1 && tdData[tickers[0]] !== undefined;
+    if (isMulti) return tdData;
+    // Single-symbol fallback
+    if (tickers.length === 1 && tdData.close != null) return { [tickers[0]]: tdData };
+    return {};
+  }
 
-    // Show table after first batch
-    if (!firstBatchDone && _screenerData.length > 0) {
-      firstBatchDone   = true;
-      _screenerLoaded  = true;
-      applyScreenerFilters();
-    } else if (firstBatchDone) {
-      applyScreenerFilters(true);
+  const tdMap = {
+    ...parseTdResponse(td1, chunk1),
+    ...parseTdResponse(td2, chunk2),
+  };
+
+  // Build data rows from TD quotes + SCREENER_META
+  _screenerData = SCREENER_TICKERS.map(ticker => {
+    const meta = SCREENER_META[ticker] || { name: ticker, sector: '' };
+    const d    = tdMap[ticker];
+    let q = { c: 0, dp: 0, d: 0 };
+    if (d && d.status !== 'error' && d.close != null) {
+      const close = parseFloat(d.close)          || 0;
+      const prev  = parseFloat(d.previous_close) || 0;
+      q = {
+        c:  close,
+        dp: parseFloat(d.percent_change) || (prev ? (close - prev) / prev * 100 : 0),
+        d:  parseFloat(d.change)         || (close - prev),
+      };
     }
-  }
+    return {
+      ticker,
+      q,
+      m:             {},     // filled lazily by loadMetricsForVisible()
+      p: {
+        name:                 meta.name,
+        finnhubIndustry:      meta.sector,
+        marketCapitalization: 0,
+      },
+      _metricLoaded: false,
+    };
+  }).filter(d => d.q.c > 0);
 
-  // Make sure table is visible even if data came in one shot
-  if (!firstBatchDone) {
-    _screenerLoaded = true;
-    applyScreenerFilters();
-  }
+  // ── Show table immediately (price + sector already available) ─────────────
+  _screenerLoaded = true;
+  applyScreenerFilters();
 
-  // ── Step 2: Finnhub metrics in background — P/E, ROE, margins, mktcap, growth ──
-  for (let i = 0; i < _screenerData.length; i += BATCH) {
-    const batch = _screenerData.slice(i, i + BATCH);
-    const results = await Promise.all(batch.map(async row => {
-      const m = await safeApi('/stock/metric', { symbol: row.ticker, metric: 'all' });
-      return { ticker: row.ticker, m: m?.metric || {} };
-    }));
+  // ── Step 2: Load Finnhub metrics for the first visible rows ───────────────
+  loadMetricsForVisible();
+}
 
-    results.forEach(({ ticker, m }) => {
-      const row = _screenerData.find(d => d.ticker === ticker);
-      if (!row) return;
-      row.m = m;
-      // Market cap from Finnhub metric (in millions already)
-      if (m.marketCapitalization) {
-        row.p.marketCapitalization = m.marketCapitalization;
-      }
-    });
+// Loads /stock/metric for any visible rows whose metrics haven't been fetched yet.
+// Called after initial load and each time the user scrolls to more rows.
+// Uses batches of 5 with 600ms between batches → ~50 calls/min max, well under IP limit.
+async function loadMetricsForVisible() {
+  if (_screenerMetricRunning) return;   // already running
+  _screenerMetricRunning = true;
 
-    applyScreenerFilters(true);
+  try {
+    const BATCH = 5;
+    const toLoad = _screenerFiltered
+      .slice(0, _screenerDisplayed)
+      .filter(d => !d._metricLoaded);
+
+    for (let i = 0; i < toLoad.length; i += BATCH) {
+      const batch   = toLoad.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(async row => {
+        const m = await safeApi('/stock/metric', { symbol: row.ticker, metric: 'all' });
+        return { ticker: row.ticker, m: m?.metric || {} };
+      }));
+
+      results.forEach(({ ticker, m }) => {
+        const row = _screenerData.find(d => d.ticker === ticker);
+        if (!row) return;
+        row.m             = m;
+        row._metricLoaded = true;
+        if (m.marketCapitalization) row.p.marketCapitalization = m.marketCapitalization;
+      });
+
+      applyScreenerFilters(true);
+      if (i + BATCH < toLoad.length) await sleep(600);
+    }
+  } finally {
+    _screenerMetricRunning = false;
   }
 }
 
@@ -1785,8 +1820,8 @@ function renderScreenerTable() {
   const visible = data.slice(0, _screenerDisplayed);
   const hasMore = data.length > _screenerDisplayed;
 
-  // Loading indicator: show while Finnhub metrics still arriving in background
-  const metricLoading = _screenerData.some(d => d.m.roeTTM == null && d.m.netProfitMarginTTM == null)
+  // Loading indicator: show while visible-row metrics are still arriving
+  const metricLoading = visible.some(d => !d._metricLoaded)
     ? `<div style="padding:6px 12px;font-size:11px;color:var(--text2);text-align:right">
          ⏳ Loading metrics…
        </div>`
@@ -1856,6 +1891,8 @@ window.addEventListener('scroll', () => {
   if (distFromBottom < 300) {
     _screenerDisplayed += 20;
     renderScreenerTable();
+    // Load metrics for the newly revealed rows
+    loadMetricsForVisible();
   }
 }, { passive: true });
 
